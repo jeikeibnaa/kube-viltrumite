@@ -71,6 +71,16 @@ func Load(path string) (*Matrix, error) {
 	return m, nil
 }
 
+// LatestVersion returns the last version string in the matrix for the named tool.
+// Returns ("", false) when the tool is unknown or has no versions.
+func (m *Matrix) LatestVersion(toolName string) (string, bool) {
+	tc, ok := m.tools[toolName]
+	if !ok || len(tc.Versions) == 0 {
+		return "", false
+	}
+	return tc.Versions[len(tc.Versions)-1].Version, true
+}
+
 // Resolve returns the CompatibilityEntry for upgrading tool from fromVersion to
 // toVersion. It returns an error when the tool is unknown or toVersion is not
 // present in the matrix.

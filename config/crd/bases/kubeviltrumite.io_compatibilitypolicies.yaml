@@ -1,0 +1,139 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: compatibilitypolicies.kubeviltrumite.io
+spec:
+  group: kubeviltrumite.io
+  names:
+    kind: CompatibilityPolicy
+    listKind: CompatibilityPolicyList
+    plural: compatibilitypolicies
+    singular: compatibilitypolicy
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.riskTolerance
+      name: Risk Tolerance
+      type: string
+    - jsonPath: .spec.scanInterval
+      name: Interval
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: CompatibilityPolicy is the Schema for the compatibilitypolicies
+          API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: CompatibilityPolicySpec defines the desired state of CompatibilityPolicy.
+            properties:
+              ai:
+                description: AIProviderConfig configures the AI backend used for analysis.
+                properties:
+                  endpoint:
+                    type: string
+                  model:
+                    type: string
+                  provider:
+                    enum:
+                    - anthropic
+                    - ollama
+                    - openai
+                    - none
+                    type: string
+                  secretRef:
+                    description: |-
+                      SecretReference represents a Secret Reference. It has enough information to retrieve secret
+                      in any namespace
+                    properties:
+                      name:
+                        description: name is unique within a namespace to reference
+                          a secret resource.
+                        type: string
+                      namespace:
+                        description: namespace defines the space within which the
+                          secret name must be unique.
+                        type: string
+                    type: object
+                    x-kubernetes-map-type: atomic
+                  timeout:
+                    type: string
+                required:
+                - provider
+                type: object
+              autoApprove:
+                description: AutoApproveConfig controls which upgrade classes are
+                  auto-approved.
+                properties:
+                  minorVersions:
+                    type: boolean
+                  patchVersions:
+                    type: boolean
+                type: object
+              gitRepo:
+                description: GitRepoRef references a git repository with optional
+                  auth.
+                properties:
+                  branch:
+                    type: string
+                  path:
+                    type: string
+                  secretRef:
+                    description: |-
+                      SecretReference represents a Secret Reference. It has enough information to retrieve secret
+                      in any namespace
+                    properties:
+                      name:
+                        description: name is unique within a namespace to reference
+                          a secret resource.
+                        type: string
+                      namespace:
+                        description: namespace defines the space within which the
+                          secret name must be unique.
+                        type: string
+                    type: object
+                    x-kubernetes-map-type: atomic
+                  url:
+                    type: string
+                required:
+                - branch
+                - path
+                - url
+                type: object
+              riskTolerance:
+                type: string
+              scanInterval:
+                type: string
+              watchNamespaces:
+                items:
+                  type: string
+                type: array
+            type: object
+          status:
+            description: CompatibilityPolicyStatus defines the observed state of CompatibilityPolicy.
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

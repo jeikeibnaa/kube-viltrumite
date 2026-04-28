@@ -1,0 +1,6 @@
+domain: kubeviltrumite.io
+layout:
+- go.kubebuilder.io/v4
+projectName: kube-viltrumite
+repo: github.com/jeikeibnaa/kube-viltrumite
+version: "3"
