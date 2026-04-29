@@ -22,3 +22,17 @@ Always code to the AIProvider interface in internal/ai/provider.go.
 make test        — unit tests
 make e2e         — e2e against kind cluster
 make generate    — regenerate CRD manifests
+
+## Documentation rule
+
+After every session create a new devlog entry:
+  docs/devlog/DEVLOG-$(date +%Y-%m-%d).md
+
+Use the session number and goal as the title.
+Always include: prompt used, files touched, errors hit,
+test results, key decisions, next session preview.
+
+Also update docs/devlog/README.md index with one new row.
+
+Never stack entries into a single file.
+One session = one file.
