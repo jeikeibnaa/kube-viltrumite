@@ -7,9 +7,9 @@ import (
 	"testing"
 )
 
-// certManagerYAML returns the absolute path to the cert-manager knowledge file
+// knowledgeToolsDir returns the absolute path to the knowledge/tools directory
 // regardless of where the test binary runs from.
-func certManagerYAML(t *testing.T) string {
+func knowledgeToolsDir(t *testing.T) string {
 	t.Helper()
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
@@ -17,11 +17,11 @@ func certManagerYAML(t *testing.T) string {
 	}
 	// file is .../internal/planner/matrix_test.go; go two dirs up to repo root
 	root := filepath.Join(filepath.Dir(file), "..", "..")
-	return filepath.Join(root, "knowledge", "tools", "cert-manager.yaml")
+	return filepath.Join(root, "knowledge", "tools")
 }
 
 func TestLoad(t *testing.T) {
-	m, err := Load(certManagerYAML(t))
+	m, err := Load(knowledgeToolsDir(t))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -30,10 +30,10 @@ func TestLoad(t *testing.T) {
 	}
 }
 
-func TestLoad_FileNotFound(t *testing.T) {
-	_, err := Load("/nonexistent/path/tool.yaml")
+func TestLoad_DirNotFound(t *testing.T) {
+	_, err := Load("/nonexistent/path/tools")
 	if err == nil {
-		t.Fatal("expected error for missing file, got nil")
+		t.Fatal("expected error for missing directory, got nil")
 	}
 }
 
@@ -43,69 +43,69 @@ func TestLoad_MissingToolField(t *testing.T) {
 	if err := writeFile(bad, "versions: []"); err != nil {
 		t.Fatal(err)
 	}
-	_, err := Load(bad)
+	_, err := Load(tmp)
 	if err == nil {
 		t.Fatal("expected error for missing 'tool' field, got nil")
 	}
 }
 
 func TestResolve(t *testing.T) {
-	m, err := Load(certManagerYAML(t))
+	m, err := Load(knowledgeToolsDir(t))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 
 	tests := []struct {
-		name        string
-		tool        string
-		fromVersion string
-		toVersion   string
-		wantMinK8s  string
-		wantRisk    string
+		name                string
+		tool                string
+		fromVersion         string
+		toVersion           string
+		wantMinK8s          string
+		wantRisk            string
 		wantIncompatIngress []string
 		wantIncompatESO     []string
 		wantBreakingCount   int
 	}{
 		{
-			name:        "1.11 to 1.12",
-			tool:        "cert-manager",
-			fromVersion: "1.11",
-			toVersion:   "1.12",
-			wantMinK8s:  "1.22",
-			wantRisk:    "medium",
+			name:                "1.11 to 1.12",
+			tool:                "cert-manager",
+			fromVersion:         "1.11",
+			toVersion:           "1.12",
+			wantMinK8s:          "1.22",
+			wantRisk:            "medium",
 			wantIncompatIngress: []string{"1.3.0", "1.3.1"},
 			wantIncompatESO:     []string{},
 			wantBreakingCount:   2,
 		},
 		{
-			name:        "1.12 to 1.13",
-			tool:        "cert-manager",
-			fromVersion: "1.12",
-			toVersion:   "1.13",
-			wantMinK8s:  "1.23",
-			wantRisk:    "low",
+			name:                "1.12 to 1.13",
+			tool:                "cert-manager",
+			fromVersion:         "1.12",
+			toVersion:           "1.13",
+			wantMinK8s:          "1.23",
+			wantRisk:            "low",
 			wantIncompatIngress: []string{"1.4.0"},
 			wantIncompatESO:     []string{"0.7.0", "0.7.1"},
 			wantBreakingCount:   2,
 		},
 		{
-			name:        "1.13 to 1.14",
-			tool:        "cert-manager",
-			fromVersion: "1.13",
-			toVersion:   "1.14",
-			wantMinK8s:  "1.23",
-			wantRisk:    "low",
+			name:                "1.13 to 1.14",
+			tool:                "cert-manager",
+			fromVersion:         "1.13",
+			toVersion:           "1.14",
+			wantMinK8s:          "1.23",
+			wantRisk:            "low",
 			wantIncompatIngress: []string{},
 			wantIncompatESO:     []string{"0.8.0"},
 			wantBreakingCount:   2,
 		},
 		{
-			name:        "1.14 to 1.15",
-			tool:        "cert-manager",
-			fromVersion: "1.14",
-			toVersion:   "1.15",
-			wantMinK8s:  "1.25",
-			wantRisk:    "high",
+			name:                "1.14 to 1.15",
+			tool:                "cert-manager",
+			fromVersion:         "1.14",
+			toVersion:           "1.15",
+			wantMinK8s:          "1.25",
+			wantRisk:            "high",
 			wantIncompatIngress: []string{"1.9.0"},
 			wantIncompatESO:     []string{"0.9.0", "0.9.1"},
 			wantBreakingCount:   3,
@@ -163,8 +163,23 @@ func TestResolve(t *testing.T) {
 	}
 }
 
+func TestLoad_DuplicateTool(t *testing.T) {
+	tmp := t.TempDir()
+	content := "tool: duplicate-tool\nversions: []\n"
+	if err := writeFile(filepath.Join(tmp, "a.yaml"), content); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFile(filepath.Join(tmp, "b.yaml"), content); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(tmp)
+	if err == nil {
+		t.Fatal("expected error for duplicate tool name, got nil")
+	}
+}
+
 func TestResolve_UnknownTool(t *testing.T) {
-	m, err := Load(certManagerYAML(t))
+	m, err := Load(knowledgeToolsDir(t))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -175,13 +190,52 @@ func TestResolve_UnknownTool(t *testing.T) {
 }
 
 func TestResolve_UnknownVersion(t *testing.T) {
-	m, err := Load(certManagerYAML(t))
+	m, err := Load(knowledgeToolsDir(t))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	_, err = m.Resolve("cert-manager", "1.15", "1.99")
 	if err == nil {
 		t.Fatal("expected error for unknown version, got nil")
+	}
+}
+
+// TestAllToolsLoaded verifies that every expected tool YAML file loads correctly
+// and meets minimum content requirements.
+func TestAllToolsLoaded(t *testing.T) {
+	m, err := Load(knowledgeToolsDir(t))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	expectedTools := []string{
+		"cert-manager",
+		"external-secrets",
+		"argo-cd",
+		"prometheus-stack",
+		"istio",
+		"vault",
+	}
+
+	for _, toolName := range expectedTools {
+		t.Run(toolName, func(t *testing.T) {
+			tc, ok := m.tools[toolName]
+			if !ok {
+				t.Fatalf("tool %q not found in matrix", toolName)
+			}
+
+			if len(tc.Versions) < 3 {
+				t.Errorf("tool %q has %d versions, want at least 3", toolName, len(tc.Versions))
+			}
+
+			breakingTotal := 0
+			for _, v := range tc.Versions {
+				breakingTotal += len(v.BreakingChanges)
+			}
+			if breakingTotal == 0 {
+				t.Errorf("tool %q has no breaking change entries across all versions", toolName)
+			}
+		})
 	}
 }
 

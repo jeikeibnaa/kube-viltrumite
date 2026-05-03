@@ -1,0 +1,125 @@
+# Tool compatibility database entry for prometheus-stack (kube-prometheus-stack Helm chart).
+#
+# Schema:
+#   tool: string                          — canonical tool name
+#   versions[]:
+#     version: string                     — semver version string (Helm chart version)
+#     min_kubernetes: string              — earliest k8s minor that supports this version
+#     incompatible_with:                  — map of tool → list of known-bad version ranges
+#       <tool-name>: [string]
+#     breaking_changes[]:
+#       description: string               — human-readable summary
+#       type: string                      — api_removal | crd_migration | config_change | behaviour_change
+#     risk_level: string                  — low | medium | high
+#     upgrade_notes: string               — operator guidance when upgrading from previous version
+
+tool: prometheus-stack
+versions:
+  - version: "45.0.0"
+    min_kubernetes: "1.21"
+    incompatible_with:
+      cert-manager: []
+      argo-cd: []
+    breaking_changes:
+      - description: "PrometheusRule CRD updated; .spec.groups[].rules[].expr now validated strictly — bare metric selectors without labels are rejected"
+        type: crd_migration
+      - description: "Grafana subchart bumped to 6.x; existing Grafana PVC data incompatible with new default storage layout"
+        type: config_change
+      - description: "kube-state-metrics subchart updated to 5.x; several metric label names changed (pod_namespace → namespace)"
+        type: behaviour_change
+    risk_level: high
+    upgrade_notes: >
+      Back up all Grafana dashboards before upgrading. Audit PrometheusRule resources for bare
+      metric selector expressions and add explicit label matchers. Migrate kube-state-metrics
+      recording rules that reference pod_namespace to use the namespace label. Consider deleting
+      and recreating the Grafana PVC if persistent dashboard storage is not required.
+
+  - version: "48.0.0"
+    min_kubernetes: "1.21"
+    incompatible_with:
+      cert-manager: []
+      argo-cd: []
+    breaking_changes:
+      - description: "PrometheusRule CRD schema version bumped; existing CRD must be replaced (not upgraded) due to structural schema addition"
+        type: crd_migration
+      - description: "Kubernetes 1.20 support dropped"
+        type: behaviour_change
+      - description: "Prometheus operator flag --prometheus-config-reloader-cpu-request removed; set via values.prometheusConfigReloader.resources"
+        type: config_change
+    risk_level: high
+    upgrade_notes: >
+      Replace PrometheusRule CRD before helm upgrade:
+      `kubectl replace -f https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/main/example/prometheus-operator-crd/monitoring.coreos.com_prometheusrules.yaml`.
+      Move any --prometheus-config-reloader-cpu-request operator args to Helm values.
+      Verify cluster is running Kubernetes >= 1.21.
+
+  - version: "51.0.0"
+    min_kubernetes: "1.22"
+    incompatible_with:
+      cert-manager: []
+      argo-cd: []
+    breaking_changes:
+      - description: "AlertmanagerConfig CRD promoted to v1; v1beta1 version removed"
+        type: api_removal
+      - description: "Kubernetes 1.21 support dropped"
+        type: behaviour_change
+    risk_level: medium
+    upgrade_notes: >
+      Migrate all AlertmanagerConfig resources from v1beta1 to v1 before upgrading.
+      Requires Kubernetes >= 1.22.
+
+  - version: "55.0.0"
+    min_kubernetes: "1.24"
+    incompatible_with:
+      cert-manager: []
+      argo-cd: []
+    breaking_changes:
+      - description: "Kubernetes 1.22 and 1.23 support dropped"
+        type: behaviour_change
+      - description: "ServiceMonitor .spec.endpoints[].tlsConfig.insecureSkipVerify field type changed from bool pointer to plain bool; null-pointer serialisations are now rejected"
+        type: crd_migration
+      - description: "kube-prometheus-stack Helm chart values key grafana.adminPassword moved to grafana.adminPasswordKey (secret reference)"
+        type: config_change
+    risk_level: medium
+    upgrade_notes: >
+      Requires Kubernetes >= 1.24. Update Helm values to replace grafana.adminPassword
+      with grafana.adminPasswordKey pointing to a Kubernetes Secret. Audit ServiceMonitor
+      manifests that set insecureSkipVerify — ensure the field is a plain bool not a pointer.
+
+  - version: "58.0.0"
+    min_kubernetes: "1.25"
+    incompatible_with:
+      cert-manager: []
+      argo-cd: []
+    breaking_changes:
+      - description: "Grafana subchart bumped to 7.x (Grafana 10); Grafana 9.x dashboard JSON panels using deprecated visualisations are rejected"
+        type: behaviour_change
+      - description: "Kubernetes 1.24 support dropped"
+        type: behaviour_change
+      - description: "Thanos sidecar integration values restructured under values.prometheus.prometheusSpec.thanos"
+        type: config_change
+    risk_level: medium
+    upgrade_notes: >
+      Requires Kubernetes >= 1.25. Audit all imported Grafana dashboards for deprecated panel
+      types (Graph, Singlestat) and migrate to current equivalents (Time series, Stat) before
+      upgrading. Update Helm values for Thanos sidecar to the new nested structure.
+      Review Grafana data source provisioning — Grafana 10 enforces stricter UID validation.
+
+  - version: "62.0.0"
+    min_kubernetes: "1.26"
+    incompatible_with:
+      cert-manager: []
+      argo-cd: []
+    breaking_changes:
+      - description: "Prometheus operator updated to 0.73+; PodMonitor and ServiceMonitor CRDs gain new required schema fields — existing resources without spec.namespaceSelector default to empty (watch all)"
+        type: crd_migration
+      - description: "Kubernetes 1.25 support dropped"
+        type: behaviour_change
+      - description: "values.kubeControllerManager.enabled now defaults to false on managed cloud clusters (GKE, EKS, AKS) where the component is not accessible"
+        type: config_change
+    risk_level: medium
+    upgrade_notes: >
+      Requires Kubernetes >= 1.26. Review ServiceMonitor and PodMonitor resources for implicit
+      namespace-watch behaviour — add explicit namespaceSelector to limit scope where needed.
+      On managed cloud clusters verify kubeControllerManager and kubeScheduler scrape settings
+      are explicitly set in Helm values rather than relying on defaults.

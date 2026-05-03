@@ -1,0 +1,120 @@
+# Tool compatibility database entry for istio.
+#
+# Schema:
+#   tool: string                          — canonical tool name
+#   versions[]:
+#     version: string                     — semver version string
+#     min_kubernetes: string              — earliest k8s minor that supports this version
+#     incompatible_with:                  — map of tool → list of known-bad version ranges
+#       <tool-name>: [string]
+#     breaking_changes[]:
+#       description: string               — human-readable summary
+#       type: string                      — api_removal | crd_migration | config_change | behaviour_change
+#     risk_level: string                  — low | medium | high
+#     upgrade_notes: string               — operator guidance when upgrading from previous version
+
+tool: istio
+versions:
+  - version: "1.18.0"
+    min_kubernetes: "1.25"
+    incompatible_with:
+      cert-manager:
+        - "1.12"   # ACME HTTP01 solver pod injection conflicts with istio-proxy sidecar in 1.12
+        - "1.12.1"
+      argo-cd: []
+    breaking_changes:
+      - description: "Istio 1.18 drops support for Kubernetes 1.24 and earlier"
+        type: behaviour_change
+      - description: "EnvoyFilter .spec.configPatches[].match.proxy.metadata field removed; use .spec.workloadSelector instead"
+        type: api_removal
+      - description: "All workload sidecars must be restarted after upgrade to pick up new Envoy xDS configuration"
+        type: behaviour_change
+    risk_level: high
+    upgrade_notes: >
+      Requires Kubernetes >= 1.25. Plan a rolling restart of ALL workload Deployments and
+      StatefulSets after the control plane upgrade — mismatched sidecar and control plane
+      versions cause xDS config errors. Use `kubectl rollout restart deployment -n <ns>` per
+      namespace. Upgrade cert-manager to >= 1.13 before this Istio version to avoid ACME
+      solver injection conflicts. Migrate EnvoyFilter resources away from proxy.metadata matchers.
+
+  - version: "1.19.0"
+    min_kubernetes: "1.25"
+    incompatible_with:
+      cert-manager:
+        - "1.12"   # ACME solver conflict persists in cert-manager 1.12 with istio 1.19
+      argo-cd: []
+    breaking_changes:
+      - description: "All workload sidecars must be restarted after upgrade — required on every Istio minor version bump"
+        type: behaviour_change
+      - description: "istio-ingressgateway Service now defaults to LoadBalancer type; NodePort installations must set explicit type in values"
+        type: config_change
+      - description: "Telemetry API v1alpha1 deprecated; v1 promoted as stable — existing Telemetry resources must be migrated"
+        type: api_removal
+    risk_level: high
+    upgrade_notes: >
+      Plan sidecar rolling restart across all namespaces after control plane upgrade.
+      Verify istio-ingressgateway Service type is explicitly set in helm values if using NodePort.
+      Migrate Telemetry resources from v1alpha1 to v1 before upgrading.
+
+  - version: "1.20.0"
+    min_kubernetes: "1.26"
+    incompatible_with:
+      cert-manager:
+        - "1.12"   # ACME solver sidecar injection conflict still present in cert-manager 1.12
+        - "1.13"   # istio 1.20 mTLS strict mode blocks cert-manager ACME HTTP01 challenge pods in 1.13
+      argo-cd: []
+    breaking_changes:
+      - description: "Kubernetes 1.25 support dropped"
+        type: behaviour_change
+      - description: "All workload sidecars must be restarted after upgrade — required on every Istio minor version bump"
+        type: behaviour_change
+      - description: "WasmPlugin .spec.imagePullPolicy field now required; previously defaulted to IfNotPresent"
+        type: config_change
+    risk_level: high
+    upgrade_notes: >
+      Requires Kubernetes >= 1.26. Plan sidecar rolling restart across all namespaces.
+      Upgrade cert-manager to >= 1.14 before this Istio version to avoid mTLS strict mode
+      blocking ACME HTTP01 challenge pods. Add explicit imagePullPolicy to all WasmPlugin resources.
+
+  - version: "1.21.0"
+    min_kubernetes: "1.26"
+    incompatible_with:
+      cert-manager: []
+      argo-cd: []
+    breaking_changes:
+      - description: "All workload sidecars must be restarted after upgrade — required on every Istio minor version bump"
+        type: behaviour_change
+      - description: "ServiceEntry .spec.endpoints[].labels field now immutable after creation; updates require resource recreation"
+        type: api_removal
+      - description: "Istio CNI plugin enabled by default in istioctl install; explicit --set components.cni.enabled=false required to opt out"
+        type: config_change
+    risk_level: high
+    upgrade_notes: >
+      Plan sidecar rolling restart across all namespaces after control plane upgrade.
+      Audit ServiceEntry resources that update endpoint labels at runtime — replace with
+      delete-and-recreate workflows. If CNI plugin is not desired, add
+      --set components.cni.enabled=false to istioctl install invocations.
+
+  - version: "1.22.0"
+    min_kubernetes: "1.27"
+    incompatible_with:
+      cert-manager:
+        - "1.12"   # ACME solver injection conflict
+        - "1.13"   # mTLS strict mode conflict with ACME HTTP01 challenge pods
+      argo-cd: []
+    breaking_changes:
+      - description: "Ambient mode promoted to GA; sidecar and ambient mode cannot coexist in the same namespace without explicit migration"
+        type: behaviour_change
+      - description: "Kubernetes 1.26 support dropped"
+        type: behaviour_change
+      - description: "All workload sidecars must be restarted after upgrade — required on every Istio minor version bump"
+        type: behaviour_change
+      - description: "istio-pilot Deployment and Service removed; replaced by istiod — any custom monitoring that targets pilot must be updated"
+        type: api_removal
+    risk_level: high
+    upgrade_notes: >
+      Requires Kubernetes >= 1.27. Plan sidecar rolling restart across ALL namespaces.
+      Ambient mode is now GA — namespaces labelled for ambient cannot simultaneously run
+      injected sidecars. Plan a phased migration per namespace if adopting ambient.
+      Remove any custom ServiceMonitor or PrometheusRule resources that target istio-pilot;
+      update to target istiod. Upgrade cert-manager to >= 1.14 before this Istio version.

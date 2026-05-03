@@ -1,0 +1,122 @@
+# Tool compatibility database entry for argo-cd.
+#
+# Schema:
+#   tool: string                          — canonical tool name
+#   versions[]:
+#     version: string                     — semver version string
+#     min_kubernetes: string              — earliest k8s minor that supports this version
+#     incompatible_with:                  — map of tool → list of known-bad version ranges
+#       <tool-name>: [string]
+#     breaking_changes[]:
+#       description: string               — human-readable summary
+#       type: string                      — api_removal | crd_migration | config_change | behaviour_change
+#     risk_level: string                  — low | medium | high
+#     upgrade_notes: string               — operator guidance when upgrading from previous version
+
+tool: argo-cd
+versions:
+  - version: "2.7.0"
+    min_kubernetes: "1.23"
+    incompatible_with:
+      ingress-nginx:
+        - "1.5.0"   # ArgoCD gRPC-web backend annotations conflict with ingress-nginx 1.5 annotation processor
+      cert-manager: []
+    breaking_changes:
+      - description: "ApplicationSet webhook server moved to a dedicated port 7000; Ingress rules must be updated"
+        type: config_change
+      - description: "argocd-notifications CRD field .spec.triggers[].template removed; use .spec.triggers[].send"
+        type: api_removal
+    risk_level: medium
+    upgrade_notes: >
+      Update any Ingress resources targeting the ApplicationSet webhook to point to port 7000.
+      Migrate argocd-notifications Trigger manifests to replace .spec.triggers[].template with
+      .spec.triggers[].send. Review RBAC policies — several default roles gained new rules.
+
+  - version: "2.8.0"
+    min_kubernetes: "1.23"
+    incompatible_with:
+      ingress-nginx:
+        - "1.6.0"   # gRPC path routing regression in ingress-nginx 1.6.0 breaks ArgoCD UI streaming
+      cert-manager: []
+    breaking_changes:
+      - description: "Kubernetes 1.22 support dropped"
+        type: behaviour_change
+      - description: "ApplicationSet generator list field .elements renamed to .list.elements for consistency"
+        type: config_change
+    risk_level: medium
+    upgrade_notes: >
+      Verify cluster is running Kubernetes >= 1.23 before upgrading.
+      Update ApplicationSet manifests using the List generator to nest .elements under .list.
+      Upgrade ingress-nginx to >= 1.7.0 before this ArgoCD version.
+
+  - version: "2.9.0"
+    min_kubernetes: "1.25"
+    incompatible_with:
+      ingress-nginx: []
+      cert-manager: []
+    breaking_changes:
+      - description: "ApplicationSet promoted to GA; beta CRD (argoproj.io/v1alpha1 ApplicationSet beta) removed"
+        type: api_removal
+      - description: "ApplicationSet controller merged into argocd-server; standalone argocd-applicationset-controller Deployment removed"
+        type: behaviour_change
+      - description: "Kubernetes 1.23 and 1.24 support dropped"
+        type: behaviour_change
+    risk_level: medium
+    upgrade_notes: >
+      Requires Kubernetes >= 1.25. Remove the standalone argocd-applicationset-controller
+      Deployment and its RBAC resources after upgrade — they are now part of argocd-server.
+      ApplicationSet CRD is now argoproj.io/v1alpha1 stable; confirm no manifests reference beta paths.
+      Existing ApplicationSet resources are automatically migrated on first reconcile.
+
+  - version: "2.10.0"
+    min_kubernetes: "1.25"
+    incompatible_with:
+      ingress-nginx: []
+      cert-manager: []
+    breaking_changes:
+      - description: "argocd-dex container image base changed to distroless; custom dex plugins that rely on shell are broken"
+        type: behaviour_change
+      - description: "Application .status.operationState.finishedAt field type changed from string to metav1.Time"
+        type: api_removal
+    risk_level: medium
+    upgrade_notes: >
+      Audit any custom Dex connector plugins or init containers that spawn a shell process
+      inside the Dex container — replace with distroless-compatible alternatives.
+      Update tooling that parses .status.operationState.finishedAt as a raw string.
+
+  - version: "2.11.0"
+    min_kubernetes: "1.26"
+    incompatible_with:
+      ingress-nginx: []
+      cert-manager: []
+    breaking_changes:
+      - description: "Kubernetes 1.25 support dropped"
+        type: behaviour_change
+      - description: "argocd-repo-server now runs as non-root by default; volume mounts with root-owned files will fail"
+        type: config_change
+    risk_level: medium
+    upgrade_notes: >
+      Requires Kubernetes >= 1.26. Audit repo-server PersistentVolumeClaims and ConfigMap volume
+      mounts for files owned by root (uid 0). Change ownership to uid 999 (argocd) or use an
+      initContainer to chown before upgrade.
+
+  - version: "2.12.0"
+    min_kubernetes: "1.26"
+    incompatible_with:
+      ingress-nginx:
+        - "1.10.0"  # Ingress status annotation conflict when ArgoCD manages Ingress resources via App-of-Apps
+      cert-manager: []
+    breaking_changes:
+      - description: "Removed deprecated argoproj.io/v1alpha1 Application .spec.source.helm.valueFiles in favour of .spec.source.helm.valuesObject"
+        type: api_removal
+      - description: "Removed deprecated --app-resync-jitter flag from argocd-application-controller"
+        type: config_change
+      - description: "argocd-redis switched to Redis 7.x; data directory format incompatible with Redis 6.x snapshots"
+        type: crd_migration
+    risk_level: medium
+    upgrade_notes: >
+      Migrate all Application manifests using .spec.source.helm.valueFiles to
+      .spec.source.helm.valuesObject before upgrading. Remove --app-resync-jitter from
+      argocd-application-controller args. Delete the argocd-redis PVC before upgrading
+      to avoid Redis data-format errors — ArgoCD state is rebuilt from the live cluster.
+      Upgrade ingress-nginx to >= 1.11.0 if ArgoCD manages Ingress resources.

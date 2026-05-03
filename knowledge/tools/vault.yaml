@@ -1,0 +1,105 @@
+# Tool compatibility database entry for vault (hashicorp/vault Helm chart).
+#
+# Schema:
+#   tool: string                          — canonical tool name
+#   versions[]:
+#     version: string                     — semver version string (Helm chart version)
+#     min_kubernetes: string              — earliest k8s minor that supports this version
+#     incompatible_with:                  — map of tool → list of known-bad version ranges
+#       <tool-name>: [string]
+#     breaking_changes[]:
+#       description: string               — human-readable summary
+#       type: string                      — api_removal | crd_migration | config_change | behaviour_change
+#     risk_level: string                  — low | medium | high
+#     upgrade_notes: string               — operator guidance when upgrading from previous version
+
+tool: vault
+versions:
+  - version: "0.24.0"
+    min_kubernetes: "1.20"
+    incompatible_with:
+      external-secrets:
+        - "0.10.0"  # Vault agent injector sidecar conflicts with ESO 0.10 token refresh on Kubernetes auth
+        - "0.10.5"
+      cert-manager: []
+    breaking_changes:
+      - description: "Vault Helm chart values key server.ha.raft.config renamed to server.ha.raft.config.content for multi-line HCL support"
+        type: config_change
+      - description: "vault-agent-injector webhook cert rotation now managed internally; external cert-manager integration for webhook TLS is no longer supported"
+        type: behaviour_change
+    risk_level: medium
+    upgrade_notes: >
+      Update Helm values to rename server.ha.raft.config to server.ha.raft.config.content if
+      using integrated Raft storage. Remove any cert-manager Certificate resources that previously
+      managed the vault-agent-injector webhook TLS — the chart now handles this internally.
+      Upgrade external-secrets to >= 0.10.0 only after upgrading Vault to >= 0.25.0.
+
+  - version: "0.25.0"
+    min_kubernetes: "1.20"
+    incompatible_with:
+      external-secrets: []
+      cert-manager: []
+    breaking_changes:
+      - description: "Kubernetes 1.19 support dropped"
+        type: behaviour_change
+      - description: "Vault chart values server.ha.raft.setNodeId removed; node ID is now always derived from the Pod name"
+        type: config_change
+    risk_level: medium
+    upgrade_notes: >
+      Requires Kubernetes >= 1.20. Remove server.ha.raft.setNodeId from Helm values before
+      upgrading — the field is ignored but causes helm diff noise. Verify Raft node IDs in
+      `vault operator raft list-peers` match Pod names after upgrade.
+
+  - version: "0.26.0"
+    min_kubernetes: "1.22"
+    incompatible_with:
+      external-secrets:
+        - "0.8.0"   # ESO 0.8 Vault dynamic secret refresh incompatible with Vault 0.26 token TTL enforcement
+        - "0.9.0"
+      cert-manager: []
+    breaking_changes:
+      - description: "Raft storage config HCL block structure changed; retry_join stanza now required inside storage block instead of top-level"
+        type: config_change
+      - description: "Kubernetes 1.20 and 1.21 support dropped"
+        type: behaviour_change
+      - description: "vault-agent-injector now injects an emptyDir volume for agent scratch space; pods with strict volume quotas may fail to schedule"
+        type: behaviour_change
+    risk_level: medium
+    upgrade_notes: >
+      Requires Kubernetes >= 1.22. Move the retry_join stanza inside the storage "raft" block
+      in server.ha.raft.config.content before upgrading. Review Pod resource quotas in namespaces
+      that use vault-agent-injector — the new emptyDir requires additional ephemeral storage.
+      Upgrade external-secrets to >= 0.9.5 before this Vault version.
+
+  - version: "0.27.0"
+    min_kubernetes: "1.22"
+    incompatible_with:
+      external-secrets: []
+      cert-manager: []
+    breaking_changes:
+      - description: "Vault chart values injector.agentImage.repository now separate from injector.image.repository; single-image overrides must be split"
+        type: config_change
+    risk_level: medium
+    upgrade_notes: >
+      If overriding the vault-agent-injector image via Helm values, split the single
+      injector.image.repository override into separate injector.image.repository (for the
+      injector binary) and injector.agentImage.repository (for the vault-agent sidecar).
+
+  - version: "0.28.0"
+    min_kubernetes: "1.24"
+    incompatible_with:
+      external-secrets: []
+      cert-manager: []
+    breaking_changes:
+      - description: "Kubernetes 1.22 and 1.23 support dropped"
+        type: behaviour_change
+      - description: "Vault audit device log format changed; JSON audit logs now include a new version field — log parsers that match the exact schema will need updating"
+        type: behaviour_change
+      - description: "server.standalone.config and server.ha.config keys deprecated in favour of server.extraConfig; old keys still work but emit deprecation warnings"
+        type: config_change
+    risk_level: medium
+    upgrade_notes: >
+      Requires Kubernetes >= 1.24. Update log parsing pipelines (Fluentd, Vector, Loki) that
+      ingest Vault audit logs to handle the new version field in JSON output.
+      Migrate server.standalone.config / server.ha.config Helm values to server.extraConfig
+      to silence deprecation warnings. The old keys remain functional until a future major release.

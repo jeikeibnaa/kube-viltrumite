@@ -3,6 +3,7 @@ package planner
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"gopkg.in/yaml.v3"
 )
@@ -17,7 +18,7 @@ type BreakingChange struct {
 
 // VersionEntry holds compatibility metadata for one minor version of a tool.
 type VersionEntry struct {
-	// Version is the semver minor string, e.g. "1.12".
+	// Version is the semver version string.
 	Version string `yaml:"version"`
 	// MinKubernetes is the earliest Kubernetes minor version this tool version supports.
 	MinKubernetes string `yaml:"min_kubernetes"`
@@ -51,23 +52,39 @@ type Matrix struct {
 	tools map[string]*ToolCompatibility
 }
 
-// Load reads the YAML file at path and returns a Matrix ready for queries.
-func Load(path string) (*Matrix, error) {
-	data, err := os.ReadFile(path)
+// Load reads all *.yaml files from the directory at dir and returns a Matrix
+// ready for queries. Every file must contain a valid ToolCompatibility document
+// with a non-empty top-level tool field.
+func Load(dir string) (*Matrix, error) {
+	pattern := filepath.Join(dir, "*.yaml")
+	files, err := filepath.Glob(pattern)
 	if err != nil {
-		return nil, fmt.Errorf("matrix: read %s: %w", path, err)
+		return nil, fmt.Errorf("matrix: glob %s: %w", pattern, err)
 	}
-
-	var tc ToolCompatibility
-	if err := yaml.Unmarshal(data, &tc); err != nil {
-		return nil, fmt.Errorf("matrix: parse %s: %w", path, err)
-	}
-	if tc.Tool == "" {
-		return nil, fmt.Errorf("matrix: %s: missing 'tool' field", path)
+	if len(files) == 0 {
+		return nil, fmt.Errorf("matrix: no yaml files found in %s", dir)
 	}
 
 	m := &Matrix{tools: make(map[string]*ToolCompatibility)}
-	m.tools[tc.Tool] = &tc
+	for _, f := range files {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			return nil, fmt.Errorf("matrix: read %s: %w", f, err)
+		}
+
+		var tc ToolCompatibility
+		if err := yaml.Unmarshal(data, &tc); err != nil {
+			return nil, fmt.Errorf("matrix: parse %s: %w", f, err)
+		}
+		if tc.Tool == "" {
+			return nil, fmt.Errorf("matrix: %s: missing 'tool' field", f)
+		}
+		if _, dup := m.tools[tc.Tool]; dup {
+			return nil, fmt.Errorf("matrix: duplicate tool %q declared in %s", tc.Tool, f)
+		}
+
+		m.tools[tc.Tool] = &tc
+	}
 	return m, nil
 }
 
