@@ -43,7 +43,7 @@ func (r *CompatibilityPolicyReconciler) Reconcile(ctx context.Context, req ctrl.
 		return r.requeue(&policy), nil
 	}
 
-	tools, err := r.Scanner.ScanHelmReleases(ctx, policy.Spec.WatchNamespaces)
+	tools, err := r.Scanner.ScanAll(ctx, policy.Spec.WatchNamespaces)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("scan: %w", err)
 	}
