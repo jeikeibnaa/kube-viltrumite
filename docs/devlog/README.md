@@ -6,3 +6,4 @@
 | [DEVLOG-2026-04-29.md](./DEVLOG-2026-04-29.md)| Session 9 | CompatibilityPolicy reconciler + cluster scanner |
 | [DEVLOG-2026-05-03.md](./DEVLOG-2026-05-03.md)| Session 10 | Multi-source scanner: plain Helm + ArgoCD + ScanAll unification |
 | [DEVLOG-2026-05-03.md](./DEVLOG-2026-05-03.md)| Session 11 | Compatibility matrix planner + knowledge YAML base (6 tools) |
+| [DEVLOG-2026-05-05.md](./DEVLOG-2026-05-05.md)| Session 12 | HelmExecutor: Helm SDK upgrade/rollback execution layer |
