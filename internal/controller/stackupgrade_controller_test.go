@@ -12,7 +12,22 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	kubeviltrumitev1alpha1 "github.com/jeikeibnaa/kube-viltrumite/api/v1alpha1"
+	"github.com/jeikeibnaa/kube-viltrumite/internal/executor"
+	"github.com/jeikeibnaa/kube-viltrumite/internal/planner"
 )
+
+type fakeUpgrader struct {
+	result *executor.UpgradeResult
+	err    error
+}
+
+func (f *fakeUpgrader) Upgrade(_ context.Context, _ planner.UpgradeStep) (*executor.UpgradeResult, error) {
+	return f.result, f.err
+}
+
+func successUpgrader() *fakeUpgrader {
+	return &fakeUpgrader{result: &executor.UpgradeResult{Success: true}}
+}
 
 func newTestScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
@@ -133,7 +148,7 @@ func TestReconcile_Upgrading_IncrementsStep(t *testing.T) {
 		},
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(obj).WithStatusSubresource(obj).Build()
-	r := &StackUpgradeReconciler{Client: c, Scheme: scheme}
+	r := &StackUpgradeReconciler{Client: c, Scheme: scheme, Executor: successUpgrader()}
 
 	reconcileOnce(t, r, "test", "default")
 
@@ -146,7 +161,7 @@ func TestReconcile_Upgrading_IncrementsStep(t *testing.T) {
 	}
 }
 
-// 5. Upgrading with CurrentStep = TotalSteps (after increment) → sets Succeeded
+// 5. Upgrading with CurrentStep = len(tools) (all steps done) → sets Succeeded
 func TestReconcile_Upgrading_LastStep_SetsSucceeded(t *testing.T) {
 	scheme := newTestScheme(t)
 	obj := &kubeviltrumitev1alpha1.StackUpgrade{
@@ -159,7 +174,7 @@ func TestReconcile_Upgrading_LastStep_SetsSucceeded(t *testing.T) {
 		Status: kubeviltrumitev1alpha1.StackUpgradeStatus{
 			Phase:       kubeviltrumitev1alpha1.UpgradePhaseUpgrading,
 			TotalSteps:  1,
-			CurrentStep: 0,
+			CurrentStep: 1, // all tools already upgraded; next reconcile should mark Succeeded
 		},
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(obj).WithStatusSubresource(obj).Build()

@@ -7,3 +7,4 @@
 | [DEVLOG-2026-05-03.md](./DEVLOG-2026-05-03.md)| Session 10 | Multi-source scanner: plain Helm + ArgoCD + ScanAll unification |
 | [DEVLOG-2026-05-03.md](./DEVLOG-2026-05-03.md)| Session 11 | Compatibility matrix planner + knowledge YAML base (6 tools) |
 | [DEVLOG-2026-05-05.md](./DEVLOG-2026-05-05.md)| Session 12 | HelmExecutor: Helm SDK upgrade/rollback execution layer |
+| [DEVLOG-2026-05-11.md](./DEVLOG-2026-05-11.md)| Session 13 | Wire HelmExecutor into StackUpgrade reconciler + --dry-run flag |

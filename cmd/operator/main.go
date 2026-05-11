@@ -17,6 +17,7 @@ import (
 	kubeviltrumitev1alpha1 "github.com/jeikeibnaa/kube-viltrumite/api/v1alpha1"
 	"github.com/jeikeibnaa/kube-viltrumite/internal/ai/adapters"
 	"github.com/jeikeibnaa/kube-viltrumite/internal/controller"
+	"github.com/jeikeibnaa/kube-viltrumite/internal/executor"
 	"github.com/jeikeibnaa/kube-viltrumite/internal/planner"
 	"github.com/jeikeibnaa/kube-viltrumite/internal/scanner"
 )
@@ -36,11 +37,13 @@ func main() {
 	var enableLeaderElection bool
 	var probeAddr string
 	var knowledgeBasePath string
+	var dryRun bool
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false, "Enable leader election for controller manager.")
 	flag.StringVar(&knowledgeBasePath, "knowledge-base-path", "/etc/viltrumite/knowledge", "Path to the knowledge base YAML file.")
+	flag.BoolVar(&dryRun, "dry-run", false, "Run Helm upgrades in dry-run mode (no changes applied).")
 
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
@@ -96,10 +99,13 @@ func main() {
 	}
 	_ = aiProvider
 
+	helmExecutor := executor.NewHelmExecutor("", "", dryRun)
+
 	if err := (&controller.StackUpgradeReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		Matrix: matrix,
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Matrix:   matrix,
+		Executor: helmExecutor,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "StackUpgrade")
 		os.Exit(1)

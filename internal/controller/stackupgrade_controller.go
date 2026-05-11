@@ -13,14 +13,21 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	kubeviltrumitev1alpha1 "github.com/jeikeibnaa/kube-viltrumite/api/v1alpha1"
+	"github.com/jeikeibnaa/kube-viltrumite/internal/executor"
 	"github.com/jeikeibnaa/kube-viltrumite/internal/planner"
 )
+
+// Upgrader executes a single Helm release upgrade operation.
+type Upgrader interface {
+	Upgrade(ctx context.Context, step planner.UpgradeStep) (*executor.UpgradeResult, error)
+}
 
 // StackUpgradeReconciler reconciles a StackUpgrade object.
 type StackUpgradeReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
-	Matrix *planner.Matrix
+	Scheme   *runtime.Scheme
+	Matrix   *planner.Matrix
+	Executor Upgrader
 }
 
 //+kubebuilder:rbac:groups=kubeviltrumite.io,resources=stackupgrades,verbs=get;list;watch;create;update;patch;delete
@@ -106,17 +113,8 @@ func (r *StackUpgradeReconciler) reconcileApproved(ctx context.Context, upgrade 
 }
 
 func (r *StackUpgradeReconciler) reconcileUpgrading(ctx context.Context, upgrade *kubeviltrumitev1alpha1.StackUpgrade) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
-
-	step := upgrade.Status.CurrentStep
-	if step < len(upgrade.Spec.Tools) {
-		tool := upgrade.Spec.Tools[step]
-		logger.Info("would upgrade tool", "tool", tool.Name, "from", tool.CurrentVersion, "to", tool.TargetVersion)
-	}
-
-	upgrade.Status.CurrentStep++
-
-	if upgrade.Status.CurrentStep >= upgrade.Status.TotalSteps {
+	currentStep := upgrade.Status.CurrentStep
+	if currentStep >= len(upgrade.Spec.Tools) {
 		now := metav1.Now()
 		upgrade.Status.Phase = kubeviltrumitev1alpha1.UpgradePhaseSucceeded
 		upgrade.Status.CompletedAt = &now
@@ -133,10 +131,57 @@ func (r *StackUpgradeReconciler) reconcileUpgrading(ctx context.Context, upgrade
 		return ctrl.Result{}, nil
 	}
 
+	step := upgrade.Spec.Tools[currentStep]
+	planStep := planner.UpgradeStep{
+		ToolName:    step.Name,
+		ReleaseName: step.Name,
+		ChartRef:    step.Name,
+		FromVersion: step.CurrentVersion,
+		ToVersion:   step.TargetVersion,
+	}
+
+	result, err := r.Executor.Upgrade(ctx, planStep)
+	if err != nil {
+		upgrade.Status.Phase = kubeviltrumitev1alpha1.UpgradePhaseFailed
+		upgrade.Status.FailureReason = err.Error()
+		apimeta.SetStatusCondition(&upgrade.Status.Conditions, metav1.Condition{
+			Type:               "Ready",
+			Status:             metav1.ConditionFalse,
+			Reason:             "UpgradeError",
+			Message:            err.Error(),
+			LastTransitionTime: metav1.Now(),
+		})
+		if statusErr := r.Status().Update(ctx, upgrade); statusErr != nil {
+			return ctrl.Result{}, statusErr
+		}
+		return ctrl.Result{}, nil
+	}
+
+	if !result.Success {
+		if result.RolledBack {
+			upgrade.Status.Phase = kubeviltrumitev1alpha1.UpgradePhaseRolledBack
+		} else {
+			upgrade.Status.Phase = kubeviltrumitev1alpha1.UpgradePhaseFailed
+		}
+		upgrade.Status.FailureReason = result.FailureReason
+		if statusErr := r.Status().Update(ctx, upgrade); statusErr != nil {
+			return ctrl.Result{}, statusErr
+		}
+		return ctrl.Result{}, nil
+	}
+
+	upgrade.Status.CurrentStep++
+	apimeta.SetStatusCondition(&upgrade.Status.Conditions, metav1.Condition{
+		Type:               "Progressing",
+		Status:             metav1.ConditionTrue,
+		Reason:             "StepComplete",
+		Message:            fmt.Sprintf("Upgraded %s to %s", step.Name, step.TargetVersion),
+		LastTransitionTime: metav1.Now(),
+	})
 	if err := r.Status().Update(ctx, upgrade); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+	return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 }
 
 func (r *StackUpgradeReconciler) reconcileFailed(ctx context.Context, upgrade *kubeviltrumitev1alpha1.StackUpgrade) (ctrl.Result, error) {
