@@ -8,3 +8,4 @@
 | [DEVLOG-2026-05-03.md](./DEVLOG-2026-05-03.md)| Session 11 | Compatibility matrix planner + knowledge YAML base (6 tools) |
 | [DEVLOG-2026-05-05.md](./DEVLOG-2026-05-05.md)| Session 12 | HelmExecutor: Helm SDK upgrade/rollback execution layer |
 | [DEVLOG-2026-05-11.md](./DEVLOG-2026-05-11.md)| Session 13 | Wire HelmExecutor into StackUpgrade reconciler + --dry-run flag |
+| [DEVLOG-2026-05-29.md](./DEVLOG-2026-05-29.md)| Session 14 | UI server (Go HTTP + JSON API) + React dashboard scaffold |
