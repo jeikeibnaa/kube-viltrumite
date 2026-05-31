@@ -1,0 +1,19 @@
+apiVersion: kubeviltrumite.io/v1alpha1
+kind: CompatibilityPolicy
+metadata:
+  name: test-policy
+  namespace: default
+spec:
+  riskTolerance: LOW
+  scanInterval: 1h
+  watchNamespaces:
+    - default
+  autoApprove:
+    patchVersions: true
+    minorVersions: false
+  ai:
+    provider: none
+  gitRepo:
+    url: https://github.com/jeikeibnaa/kube-viltrumite
+    branch: main
+    path: knowledge/tools

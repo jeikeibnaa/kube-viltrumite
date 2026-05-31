@@ -1,0 +1,12 @@
+apiVersion: kubeviltrumite.io/v1alpha1
+kind: StackUpgrade
+metadata:
+  name: test-upgrade
+  namespace: default
+spec:
+  approvalRequired: false
+  tools:
+    - name: cert-manager
+      currentVersion: v1.13.0
+      targetVersion: v1.14.0
+      risk: LOW

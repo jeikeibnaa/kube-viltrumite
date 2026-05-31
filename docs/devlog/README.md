@@ -9,3 +9,4 @@
 | [DEVLOG-2026-05-05.md](./DEVLOG-2026-05-05.md)| Session 12 | HelmExecutor: Helm SDK upgrade/rollback execution layer |
 | [DEVLOG-2026-05-11.md](./DEVLOG-2026-05-11.md)| Session 13 | Wire HelmExecutor into StackUpgrade reconciler + --dry-run flag |
 | [DEVLOG-2026-05-29.md](./DEVLOG-2026-05-29.md)| Session 14 | UI server (Go HTTP + JSON API) + React dashboard scaffold |
+| [DEVLOG-2026-05-31.md](./DEVLOG-2026-05-31.md)| Session 15 | Local cluster bootstrap + first end-to-end operator run |
