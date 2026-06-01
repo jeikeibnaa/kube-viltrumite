@@ -13,6 +13,16 @@
 #     risk_level: string                  — low | medium | high
 #     upgrade_notes: string               — operator guidance when upgrading from previous minor
 
+detection:
+  deployments:
+    - name: cert-manager
+      namespace_hint: cert-manager
+      container: cert-manager-controller
+      image_contains: "cert-manager-controller"
+      version_from: image_tag
+  labels:
+    app.kubernetes.io/name: cert-manager
+
 tool: cert-manager
 versions:
   - version: "1.12"

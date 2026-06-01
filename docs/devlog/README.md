@@ -10,3 +10,4 @@
 | [DEVLOG-2026-05-11.md](./DEVLOG-2026-05-11.md)| Session 13 | Wire HelmExecutor into StackUpgrade reconciler + --dry-run flag |
 | [DEVLOG-2026-05-29.md](./DEVLOG-2026-05-29.md)| Session 14 | UI server (Go HTTP + JSON API) + React dashboard scaffold |
 | [DEVLOG-2026-05-31.md](./DEVLOG-2026-05-31.md)| Session 15 | Local cluster bootstrap + first end-to-end operator run |
+| [DEVLOG-2026-06-01.md](./DEVLOG-2026-06-01.md)| Session 19 | Matrix helpers (ListTools/LatestSafeVersion/RiskAtOrBelow), CompatibilityPolicy type extensions, reconciler rewrite (pull+push model) |

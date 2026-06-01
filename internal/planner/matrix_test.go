@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"github.com/jeikeibnaa/kube-viltrumite/internal/ai"
 )
 
 // knowledgeToolsDir returns the absolute path to the knowledge/tools directory
@@ -234,6 +236,176 @@ func TestAllToolsLoaded(t *testing.T) {
 			}
 			if breakingTotal == 0 {
 				t.Errorf("tool %q has no breaking change entries across all versions", toolName)
+			}
+		})
+	}
+}
+
+func TestNormalizeVersion(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"v1.14.0", "1.14"},
+		{"1.14.2", "1.14"},
+		{"1.14", "1.14"},
+		{"v0.9.5", "0.9"},
+		{"garbage", "garbage"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.input, func(t *testing.T) {
+			got := normalizeVersion(tc.input)
+			if got != tc.want {
+				t.Errorf("normalizeVersion(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestResolveNormalized covers the exact production failure: raw semver strings
+// from the cluster scanner ("v1.13.0", "v1.14.0") must match knowledge-base
+// entries stored as major.minor ("1.14").
+func TestResolveNormalized(t *testing.T) {
+	m, err := Load(knowledgeToolsDir(t))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	entry, err := m.Resolve("cert-manager", "v1.13.0", "v1.14.0")
+	if err != nil {
+		t.Fatalf("Resolve with raw versions: %v", err)
+	}
+	if entry.FromVersion != "1.13" {
+		t.Errorf("FromVersion: got %q, want %q", entry.FromVersion, "1.13")
+	}
+	if normalizeVersion(entry.Version) != "1.14" {
+		t.Errorf("Version: got %q, want normalized 1.14", entry.Version)
+	}
+	if entry.MinKubernetes != "1.23" {
+		t.Errorf("MinKubernetes: got %q, want %q", entry.MinKubernetes, "1.23")
+	}
+	if entry.RiskLevel != "low" {
+		t.Errorf("RiskLevel: got %q, want %q", entry.RiskLevel, "low")
+	}
+}
+
+func TestCompareMinor(t *testing.T) {
+	tests := []struct {
+		a, b string
+		want int
+	}{
+		{"1.13", "1.14", -1},
+		{"1.14", "1.14", 0},
+		{"1.15", "1.14", 1},
+	}
+	for _, tc := range tests {
+		name := tc.a + "_vs_" + tc.b
+		t.Run(name, func(t *testing.T) {
+			got := CompareMinor(tc.a, tc.b)
+			if got != tc.want {
+				t.Errorf("CompareMinor(%q, %q) = %d, want %d", tc.a, tc.b, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestListTools(t *testing.T) {
+	m, err := Load(knowledgeToolsDir(t))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	tools := m.ListTools()
+	found := false
+	for _, n := range tools {
+		if n == "cert-manager" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("ListTools: expected cert-manager to be present")
+	}
+
+	for i := 1; i < len(tools); i++ {
+		if tools[i] < tools[i-1] {
+			t.Errorf("ListTools: result not sorted: %q before %q", tools[i-1], tools[i])
+		}
+	}
+}
+
+func TestLatestSafeVersion(t *testing.T) {
+	m, err := Load(knowledgeToolsDir(t))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	tests := []struct {
+		name        string
+		tool        string
+		current     string
+		tolerance   ai.RiskLevel
+		wantVersion string
+		wantRisk    ai.RiskLevel
+		wantFound   bool
+	}{
+		{
+			// 1.14 is low, 1.15 is high — only 1.14 qualifies at MEDIUM ceiling
+			name:        "medium tolerance above 1.13 finds 1.14",
+			tool:        "cert-manager",
+			current:     "1.13",
+			tolerance:   ai.RiskMedium,
+			wantVersion: "1.14",
+			wantRisk:    ai.RiskLow,
+			wantFound:   true,
+		},
+		{
+			// 1.15 is the last entry; nothing above it
+			name:      "low tolerance above 1.15 finds nothing",
+			tool:      "cert-manager",
+			current:   "1.15",
+			tolerance: ai.RiskLow,
+			wantFound: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rec, risk, found := m.LatestSafeVersion(tc.tool, tc.current, tc.tolerance)
+			if found != tc.wantFound {
+				t.Fatalf("found=%v, want %v", found, tc.wantFound)
+			}
+			if !found {
+				return
+			}
+			if rec != tc.wantVersion {
+				t.Errorf("recommended=%q, want %q", rec, tc.wantVersion)
+			}
+			if risk != tc.wantRisk {
+				t.Errorf("risk=%q, want %q", risk, tc.wantRisk)
+			}
+		})
+	}
+}
+
+func TestRiskAtOrBelow(t *testing.T) {
+	tests := []struct {
+		risk    ai.RiskLevel
+		ceiling ai.RiskLevel
+		want    bool
+	}{
+		{ai.RiskLow, ai.RiskMedium, true},
+		{ai.RiskHigh, ai.RiskLow, false},
+		{ai.RiskLow, ai.RiskLow, true},
+		{ai.RiskMedium, ai.RiskMedium, true},
+		{ai.RiskBlocking, ai.RiskHigh, false},
+	}
+	for _, tc := range tests {
+		name := string(tc.risk) + "_leq_" + string(tc.ceiling)
+		t.Run(name, func(t *testing.T) {
+			got := RiskAtOrBelow(tc.risk, tc.ceiling)
+			if got != tc.want {
+				t.Errorf("RiskAtOrBelow(%q, %q) = %v, want %v", tc.risk, tc.ceiling, got, tc.want)
 			}
 		})
 	}

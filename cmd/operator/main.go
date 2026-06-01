@@ -116,11 +116,29 @@ func main() {
 		os.Exit(1)
 	}
 
+	detectionMap := matrix.Detections()
+	detections := make([]scanner.ToolDetection, 0, len(detectionMap))
+	for toolName, spec := range detectionMap {
+		td := scanner.ToolDetection{ToolName: toolName, Labels: spec.Labels}
+		for _, d := range spec.Deployments {
+			td.Deployments = append(td.Deployments, scanner.DeploymentMatch{
+				Name:          d.Name,
+				NamespaceHint: d.NamespaceHint,
+				Container:     d.Container,
+				ImageContains: d.ImageContains,
+				VersionFrom:   d.VersionFrom,
+			})
+		}
+		detections = append(detections, td)
+	}
+
 	if err := (&controller.CompatibilityPolicyReconciler{
-		Client:  mgr.GetClient(),
-		Scheme:  mgr.GetScheme(),
-		Scanner: &scanner.ClusterScanner{Client: mgr.GetClient()},
-		Matrix:  matrix,
+		Client:          mgr.GetClient(),
+		Scheme:          mgr.GetScheme(),
+		Scanner:         &scanner.ClusterScanner{Client: mgr.GetClient()},
+		WorkloadScanner: &scanner.WorkloadScanner{Client: mgr.GetClient()},
+		Matrix:          matrix,
+		Detections:      detections,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "CompatibilityPolicy")
 		os.Exit(1)

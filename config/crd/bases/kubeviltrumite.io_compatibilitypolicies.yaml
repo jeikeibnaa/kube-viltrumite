@@ -21,6 +21,12 @@ spec:
     - jsonPath: .spec.scanInterval
       name: Interval
       type: string
+    - jsonPath: .status.mode
+      name: Mode
+      type: string
+    - jsonPath: .status.lastScanTime
+      name: Last Scan
+      type: date
     name: v1alpha1
     schema:
       openAPIV3Schema:
@@ -90,6 +96,27 @@ spec:
                   patchVersions:
                     type: boolean
                 type: object
+              autoplan:
+                description: Autoplan enables automatic StackUpgrade creation for
+                  qualifying upgrades.
+                properties:
+                  autoApprove:
+                    description: AutoApprove creates generated StackUpgrades already
+                      in the Approved phase (non-prod use).
+                    type: boolean
+                  enabled:
+                    type: boolean
+                  maxRisk:
+                    default: LOW
+                    enum:
+                    - LOW
+                    - MEDIUM
+                    - HIGH
+                    - BLOCKING
+                    type: string
+                required:
+                - enabled
+                type: object
               gitRepo:
                 description: GitRepoRef references a git repository with optional
                   auth.
@@ -124,6 +151,13 @@ spec:
                 type: string
               scanInterval:
                 type: string
+              trackedTools:
+                description: |-
+                  TrackedTools restricts scanning to the listed tool names.
+                  Empty means discovery mode: track all known tools.
+                items:
+                  type: string
+                type: array
               watchNamespaces:
                 items:
                   type: string
@@ -131,6 +165,55 @@ spec:
             type: object
           status:
             description: CompatibilityPolicyStatus defines the observed state of CompatibilityPolicy.
+            properties:
+              lastScanTime:
+                format: date-time
+                type: string
+              mode:
+                description: Mode is "discovery" when TrackedTools is empty, "focused"
+                  otherwise.
+                type: string
+              tools:
+                description: Tools lists the upgrade status of every evaluated tool.
+                items:
+                  description: TrackedToolStatus reports the upgrade status of a single
+                    tracked tool.
+                  properties:
+                    installed:
+                      type: boolean
+                    installedVersion:
+                      type: string
+                    message:
+                      type: string
+                    name:
+                      type: string
+                    namespace:
+                      type: string
+                    recommendedVersion:
+                      type: string
+                    risk:
+                      type: string
+                    source:
+                      type: string
+                    upgradeAvailable:
+                      type: boolean
+                  required:
+                  - installed
+                  - name
+                  type: object
+                type: array
+              unknownInstalled:
+                description: UnknownInstalled lists tools found in the cluster that
+                  have no KB entry.
+                items:
+                  type: string
+                type: array
+              untrackableTools:
+                description: UntrackableTools lists names from TrackedTools that have
+                  no KB entry.
+                items:
+                  type: string
+                type: array
             type: object
         type: object
     served: true
