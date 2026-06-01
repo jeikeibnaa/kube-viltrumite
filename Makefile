@@ -15,7 +15,7 @@ generate:
 	go generate ./...
 
 manifests:
-	$(CONTROLLER_GEN) crd paths="./api/..." output:crd:artifacts:config=config/crd/bases
+	$(CONTROLLER_GEN) crd paths="./api/v1alpha1/..." output:crd:artifacts:config=config/crd/bases
 
 install: manifests
 	kubectl apply -f config/crd/bases/
