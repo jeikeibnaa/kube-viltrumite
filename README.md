@@ -76,6 +76,39 @@ spec:
 | Cross-tool ordering and multi-step plans | 🔴 Planned for v0.4.0 |
 | Dashboard | 🟡 Upgrade list + approve; full dashboard in v0.5.0 |
 | AI providers | 🟡 Ollama adapter works; wiring + OpenAI-compatible/Anthropic in v0.6.0 |
+| Container image, `kubectl apply -k` install, CI with a kind smoke test | ✅ Working |
+
+## Install in a cluster
+
+No image is published yet (signed images arrive in v0.9.0), so build it and load it into a local
+[kind](https://kind.sigs.k8s.io/) cluster. You need Docker, kind, `kubectl` and `make`.
+
+```bash
+kind create cluster
+make docker-build                  # builds ghcr.io/jeikeibnaa/kube-viltrumite:dev
+kind load docker-image ghcr.io/jeikeibnaa/kube-viltrumite:dev
+make deploy                        # kubectl apply -k config/default
+kubectl -n viltrumite-system rollout status deploy/viltrumite-controller-manager
+```
+
+This installs the CRDs, the RBAC and the operator into `viltrumite-system`. The pod runs non-root
+with a read-only root filesystem, under Pod Security `restricted`. Apply a policy and read the
+report:
+
+```bash
+kubectl apply -f config/samples/compatibilitypolicy_sample.yaml
+kubectl get compatibilitypolicies -A   # MODE turns to "discovery" after the first scan
+```
+
+The dashboard has no authentication yet (that lands in v0.5.0), so it listens only on the pod's
+loopback interface. Reach it with a port-forward, then open http://localhost:8082:
+
+```bash
+kubectl -n viltrumite-system port-forward deploy/viltrumite-controller-manager 8082
+```
+
+`make undeploy` removes everything again, including the CRDs and every policy. `make e2e` runs this
+whole flow in a throwaway kind cluster as a smoke test (CI runs it on every pull request).
 
 ## Development
 
@@ -85,10 +118,12 @@ Prerequisites: Go 1.26+, Node.js 20+, `make`, `kubectl`, and a cluster to point 
 ```bash
 make help        # list targets
 make verify      # go vet + unit tests + build (run before every commit)
+make lint        # golangci-lint, pinned to the version CI uses
 make generate    # regenerate deepcopy, CRDs and RBAC after changing api/ or RBAC markers
 make install     # apply CRDs to the current kube-context
 make ui          # build the dashboard into ui/dist
 make run         # run the operator locally; dashboard on http://localhost:8082
+make e2e         # smoke test in a throwaway kind cluster (Docker, kind, kubectl, curl)
 ```
 
 Then apply a policy and watch the report:
