@@ -39,7 +39,7 @@ func main() {
 	var probeAddr string
 	var knowledgeBasePath string
 	var dryRun bool
-	var uiPort int
+	var uiBindAddr string
 	var uiPath string
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
@@ -47,7 +47,8 @@ func main() {
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false, "Enable leader election for controller manager.")
 	flag.StringVar(&knowledgeBasePath, "knowledge-base-path", "/etc/viltrumite/knowledge", "Path to the knowledge base YAML file.")
 	flag.BoolVar(&dryRun, "dry-run", false, "Run Helm upgrades in dry-run mode (no changes applied).")
-	flag.IntVar(&uiPort, "ui-port", 8082, "Port the UI server listens on.")
+	flag.StringVar(&uiBindAddr, "ui-bind-address", server.DefaultBindAddress,
+		"The address the UI server binds to. It has no authentication yet, so keep it on loopback and reach it with kubectl port-forward.")
 	flag.StringVar(&uiPath, "ui-path", "./ui/dist", "Path to the built React UI files.")
 
 	opts := zap.Options{Development: true}
@@ -155,7 +156,7 @@ func main() {
 
 	ctx := ctrl.SetupSignalHandler()
 
-	uiServer := server.NewServer(mgr, uiPort, uiPath)
+	uiServer := server.NewServer(mgr, uiBindAddr, uiPath)
 	go func() {
 		if err := uiServer.Start(ctx); err != nil {
 			setupLog.Error(err, "ui server error")
