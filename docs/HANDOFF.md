@@ -1,6 +1,6 @@
 # Kube-Viltrumite — project handoff context
 
-Read this at the start of every session (CLAUDE.md → Session Workflow). It captures the project's current state, the audit findings, the roadmap to v1.0.0, and carried-forward prompts. Last updated 2026-09-27 (S22).
+Read this at the start of every session (CLAUDE.md → Session Workflow). It captures the project's current state, the audit findings, the roadmap to v1.0.0, and carried-forward prompts. Last updated 2026-09-28 (S23).
 
 ---
 
@@ -48,7 +48,7 @@ The engineer only ever writes `CompatibilityPolicy`. `StackUpgrade` is created e
 - Go 1.26 (see go.mod). Chosen over TypeScript for K8s-native ecosystem fit, Helm SDK access, single-binary distribution.
 - kubebuilder v4 layout, controller-runtime v0.23, k8s.io v0.35, helm.sh/helm/v3, React + Vite. Planned: go-git, go-github, Anthropic Go SDK.
 - controller-gen v0.21.0 and golangci-lint v2.14.0 run via `go run ...@version` from the Makefile (no tools.go, no GOPATH install). The golangci-lint version is also pinned in `.github/workflows/ci.yml`; keep the two in sync.
-- Knowledge base: YAML under `knowledge/tools/`, compiled into the binary via go:embed (`knowledge/embed.go`, `planner.Load(fs.FS)`). `--knowledge-base-path` optionally replaces it with a directory on disk.
+- Knowledge base: YAML under `knowledge/tools/`, compiled into the binary via go:embed (`knowledge/embed.go`, `planner.Load(fs.FS)`). `--knowledge-base-path` optionally replaces it with a directory on disk. Schema v2 (S23; documented at the top of every file): canonical `tool` + `aliases` (the names scanners report), per version `app_version` (the compare key), `chart_version`, `source` (release notes). `Load` parses strictly and validates the whole KB, so the operator refuses to start on an invalid one. Versions compare as full semver with `github.com/Masterminds/semver/v3` (Helm's library); `Matrix.CanonicalName` maps an alias to its tool.
 - Install: `make docker-build && make deploy` (kustomize `config/default` → namespace `viltrumite-system`, image `ghcr.io/jeikeibnaa/kube-viltrumite:dev`). The UI binds `127.0.0.1:8082` (`--ui-bind-address`) and is reached with `kubectl -n viltrumite-system port-forward deploy/viltrumite-controller-manager 8082` until auth lands (S37).
 - Workflow with Claude Code: one roadmap session = one fresh Claude Code session = one branch (`session/<N>-<topic>`) = one PR; always name exact files to touch; `make verify` before every commit. Full steps in CLAUDE.md.
 - Devlog: `docs/devlog/DEVLOG-YYYY-MM-DD-S<N>.md`, one file per session, English + Mongolian, with `docs/devlog/README.md` as the index.
@@ -58,7 +58,7 @@ The engineer only ever writes `CompatibilityPolicy`. `StackUpgrade` is created e
 
 ---
 
-## Current state (as of 2026-09-27, after S22)
+## Current state (as of 2026-09-28, after S23)
 
 Done — `go vet` and all unit tests green:
 
@@ -75,6 +75,7 @@ Done — `go vet` and all unit tests green:
 - Session 20: repo hygiene (leaked `docs/devlog/test` and tracked `operator` binary removed from HEAD), Makefile rewrite (`verify`, `generate` = deepcopy + CRDs + RBAC, `ui`, working `run`), generated `config/rbac/role.yaml`, LICENSE (Apache-2.0), README, bilingual-devlog + PR-per-session workflow, roadmap in `todos.md`.
 - Session 21: knowledge base embedded (go:embed); multi-stage Dockerfile (distroless, UID 65532) + allowlist `.dockerignore`; kustomize install (`config/default`: CRDs, ClusterRole + namespaced lease Role and bindings, hardened Deployment with read-only root FS and probes on :8081); RBAC markers for Flux/Argo/Helm secrets/leases/events; UI server on loopback with `http.CrossOriginProtection`, a loopback Host check (DNS rebinding) and no CORS headers; `--ui-port` replaced by `--ui-bind-address`. Verified in S22 (image build and in-cluster run).
 - Session 22: GitHub Actions CI (`.github/workflows/ci.yml`: `make verify` + clean tree after `make generate`, golangci-lint v2.14.0 + shellcheck, `make ui`, image build without push, kind e2e), all green on PR jeikeibnaa/kube-viltrumite#3; `make e2e` (`hack/e2e.sh`): kind → image → `kind load` → `make deploy` → sample policy reaches `status.mode=discovery`, the Lease is held by the pod, no `forbidden`/`read-only file system` in the log, `/api/health` and `/` answer through port-forward. Passes in CI (Kubernetes v1.37.0) and locally (v1.32.2). Minimal `.golangci.yml` and its 11 findings fixed; README "Install in a cluster". v0.1.0 exit criteria met; the tag waits for the owner.
+- Session 23: knowledge base schema v2. Canonical `tool` + `aliases` (`kube-prometheus-stack` → `prometheus-stack`, `istiod`/`base` → `istio`, `argocd` → `argo-cd`); every version entry has `app_version`, `chart_version` (real mappings read from the upstream chart indexes and `Chart.yaml` files) and a release-notes `source` (31 URLs, all HTTP 200). `CompareMinor` replaced by `CompareVersions` (Masterminds/semver/v3, now a direct dependency); `Resolve` picks the exact entry or the latest one below the target on its minor line; `LatestSafeVersion` sees patch entries (external-secrets 0.10.0 → 0.10.5). `Load` decodes strictly and validates everything (required fields, enums, ascending unique versions, http(s) sources, unique names/aliases, known `incompatible_with` keys), reporting all problems at once. `ingress-nginx` (not in the KB) moved from `incompatible_with` into `upgrade_notes`. Until S24, Helm/Flux/Argo scanners still report chart versions, so vault and prometheus-stack compare chart against app versions: tag v0.1.0 at `7362ba4`, not a later `main`.
 
 Numbering note: the old plan's sessions 20–22 (dashboard, Plan upgrade, raw-install guard) are now S34, S35 and S29 in the v1.0 roadmap. Their detailed prompts are kept at the bottom of this file.
 
@@ -90,10 +91,10 @@ History note: an unrelated scratch file (`docs/devlog/test`) and the 97MB `opera
 |---|---|---|
 | 1 | `reconcileUpgrading` passes the tool name as both Helm release name and chart ref, with no namespace — real upgrades fail with "release not found" regardless of install method. | S27, S29 |
 | 2 | `helm upgrade` against Flux/Argo-managed releases is reverted by the GitOps controller. | S29 (route/block), S42–44 (PR mode) |
-| 3 | KB mixes app versions (argo-cd, istio, cert-manager) with chart versions (vault, prometheus-stack); the Helm scanner reports chart versions. | S23, S24 |
-| 4 | Tool names: Helm scanner uses the chart name (`kube-prometheus-stack` ≠ `prometheus-stack`; istio charts are `base`/`istiod`); Flux scanner uses the HelmRelease object name. | S23, S24 |
+| 3 | KB mixes app versions (argo-cd, istio, cert-manager) with chart versions (vault, prometheus-stack); the Helm scanner reports chart versions. | S23 ✅ (every entry has `app_version` + `chart_version`), S24 (scanners report app versions) |
+| 4 | Tool names: Helm scanner uses the chart name (`kube-prometheus-stack` ≠ `prometheus-stack`; istio charts are `base`/`istiod`); Flux scanner uses the HelmRelease object name. | S23 ✅ (`aliases` + `Matrix.CanonicalName`), S24 (scanners name by chart and canonicalize) |
 | 5 | Flux scanner uses `helm.toolkit.fluxcd.io/v2beta1`, removed in newer Flux — silently finds nothing. | S24 |
-| 6 | `CompareMinor` collapses patch versions (external-secrets `0.9.0` vs `0.9.5`). | S23 |
+| 6 | `CompareMinor` collapses patch versions (external-secrets `0.9.0` vs `0.9.5`). | S23 ✅ (`CompareVersions`, full semver) |
 | 7 | `incompatible_with` / `min_kubernetes` parsed but never enforced; no upgrade ordering; no multi-hop paths. | S28, S31–33 |
 | 8 | AIProvider built then discarded (`_ = aiProvider` in `cmd/operator/main.go`); Anthropic/OpenAI adapters return Noop; `spec.ai` ignored; prompts inline in `ollama.go`. | S38–40 |
 | 9 | UI server: no auth, `Access-Control-Allow-Origin: *`, approve endpoint mutates the cluster; approval stored in `status.phase`. | S21 ✅ (loopback bind, CORS removed, CSRF + DNS-rebinding guards), S27 (approval in spec), S37 (auth) |
