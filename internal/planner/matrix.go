@@ -1,9 +1,10 @@
 package planner
 
 import (
+	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
+	"io/fs"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -54,8 +55,8 @@ type DetectionSpec struct {
 
 // ToolCompatibility is the top-level document parsed from a tool YAML file.
 type ToolCompatibility struct {
-	Tool      string        `yaml:"tool"`
-	Detection DetectionSpec `yaml:"detection"`
+	Tool      string         `yaml:"tool"`
+	Detection DetectionSpec  `yaml:"detection"`
 	Versions  []VersionEntry `yaml:"versions"`
 }
 
@@ -87,22 +88,30 @@ func RiskAtOrBelow(risk, ceiling ai.RiskLevel) bool {
 	return riskOrder[risk] <= riskOrder[ceiling]
 }
 
-// Load reads all *.yaml files from the directory at dir and returns a Matrix
-// ready for queries. Every file must contain a valid ToolCompatibility document
-// with a non-empty top-level tool field.
-func Load(dir string) (*Matrix, error) {
-	pattern := filepath.Join(dir, "*.yaml")
-	files, err := filepath.Glob(pattern)
+// Load reads every *.yaml file at the root of fsys and returns a Matrix ready
+// for queries. Pass knowledge.Tools() for the embedded knowledge base or
+// os.DirFS(dir) for a directory on disk. Every file must contain a valid
+// ToolCompatibility document with a non-empty top-level tool field.
+func Load(fsys fs.FS) (*Matrix, error) {
+	entries, err := fs.ReadDir(fsys, ".")
 	if err != nil {
-		return nil, fmt.Errorf("matrix: glob %s: %w", pattern, err)
+		return nil, fmt.Errorf("matrix: read knowledge base: %w", err)
+	}
+
+	var files []string
+	for _, e := range entries {
+		if e.IsDir() || path.Ext(e.Name()) != ".yaml" {
+			continue
+		}
+		files = append(files, e.Name())
 	}
 	if len(files) == 0 {
-		return nil, fmt.Errorf("matrix: no yaml files found in %s", dir)
+		return nil, errors.New("matrix: no yaml files found in knowledge base")
 	}
 
 	m := &Matrix{tools: make(map[string]*ToolCompatibility)}
 	for _, f := range files {
-		data, err := os.ReadFile(f)
+		data, err := fs.ReadFile(fsys, f)
 		if err != nil {
 			return nil, fmt.Errorf("matrix: read %s: %w", f, err)
 		}
