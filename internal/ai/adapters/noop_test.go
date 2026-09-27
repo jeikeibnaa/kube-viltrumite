@@ -9,7 +9,7 @@ import (
 )
 
 func TestNewNoopProvider_satisfiesInterface(t *testing.T) {
-	var _ ai.AIProvider = adapters.NewNoopProvider()
+	var _ ai.AIProvider = &adapters.NoopProvider{}
 }
 
 func TestNoopProvider_IsAvailable(t *testing.T) {

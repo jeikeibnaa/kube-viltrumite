@@ -7,6 +7,9 @@ IMG             ?= ghcr.io/jeikeibnaa/kube-viltrumite:dev
 # Windows, Linux and CI without a GOPATH install and without touching go.mod.
 CONTROLLER_TOOLS_VERSION := v0.21.0
 CONTROLLER_GEN           := go run sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_TOOLS_VERSION)
+# Keep in sync with the golangci-lint-action `version:` in .github/workflows/ci.yml.
+GOLANGCI_LINT_VERSION    := v2.14.0
+GOLANGCI_LINT            := go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 
 # The `vilt` kubectl plugin (cmd/cli) lands in v0.9.0; until then build is operator-only.
 
@@ -27,8 +30,8 @@ test: ## Run unit tests
 vet: ## Run go vet
 	go vet ./...
 
-lint: ## Run golangci-lint (must be installed; CI provides it)
-	golangci-lint run ./...
+lint: ## Run golangci-lint (pinned, same version as CI; see .golangci.yml)
+	$(GOLANGCI_LINT) run ./...
 
 verify: vet test build ## Pre-commit gate: vet + test + build
 
