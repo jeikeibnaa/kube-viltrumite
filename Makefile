@@ -13,10 +13,10 @@ GOLANGCI_LINT            := go run github.com/golangci/golangci-lint/v2/cmd/gola
 
 # The `vilt` kubectl plugin (cmd/cli) lands in v0.9.0; until then build is operator-only.
 
-.PHONY: help build ui test vet lint verify generate manifests install run docker-build deploy undeploy clean
+.PHONY: help build ui test vet lint verify generate manifests install run docker-build deploy undeploy e2e clean
 
 help: ## List available targets
-	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  %-13s %s\n", $$1, $$2}'
+	@grep -E '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  %-13s %s\n", $$1, $$2}'
 
 build: ## Build the operator binary into bin/
 	go build -o $(BINARY_OPERATOR) ./cmd/operator
@@ -58,6 +58,9 @@ deploy: ## Install CRDs, RBAC and the operator into the current kube-context
 
 undeploy: ## Remove everything deploy created (including the CRDs and their objects)
 	kubectl delete -k config/default --ignore-not-found
+
+e2e: ## Smoke test in a throwaway kind cluster (needs docker, kind, kubectl, curl)
+	bash hack/e2e.sh
 
 clean: ## Remove build output
 	rm -rf bin
