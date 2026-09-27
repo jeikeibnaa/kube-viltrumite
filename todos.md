@@ -3,8 +3,7 @@
 Roadmap to v1.0.0. One item = one Claude Code session. See `docs/HANDOFF.md` for the full scope of each session.
 
 ## Active
-- [ ] [v0.1.0] S21 — Embed KB via go:embed, multi-stage Dockerfile, fill config/ (manager, kustomize), add missing RBAC markers (Flux helmreleases, Argo applications, secrets, leases, events), UI binds localhost + drop CORS *
-- [ ] [v0.1.0] S22 — GitHub Actions CI (vet, lint, test, image) + kind smoke test + `make e2e`; tag v0.1.0
+- [ ] [v0.1.0] S22 — GitHub Actions CI (vet, lint, test, generate-diff, image) + kind smoke test + `make e2e`; first real build of the S21 Dockerfile (Docker was unavailable in S21); README "Install in a cluster"; tag v0.1.0
 - [ ] [v0.2.0] S23 — KB schema v2: chart names/aliases, app_version vs chart_version, source links, real semver, KB validation test
 - [ ] [v0.2.0] S24 — Scanners: Flux helm.toolkit.fluxcd.io/v2, name by chart, report app version, Argo multi-source, detection for all 6 tools
 - [ ] [v0.2.0] S25 — CompatibilityPolicy reconciler tests + envtest
@@ -27,12 +26,14 @@ Roadmap to v1.0.0. One item = one Claude Code session. See `docs/HANDOFF.md` for
 - [ ] [v0.7.0] S42 — Git scanner (go-git): locate HelmRelease/Application manifests for installed tools
 - [ ] [v0.7.0] S43 — GitHub PR generation for GitOps-managed upgrades
 - [ ] [v0.7.0] S44 — StackUpgrade tracks PR state until GitOps reports the new version; tag v0.7.0
-- [ ] [v0.8.0] S45–47 — Hardening: least-privilege RBAC, CEL validation, Events/audit trail, Prometheus metrics, NetworkPolicy, security review; tag v0.8.0
+- [ ] [v0.8.0] S45–47 — Hardening: least-privilege RBAC (incl. narrowing cluster-wide Helm `secrets` get/list, HANDOFF #15), CEL validation, Events/audit trail, Prometheus metrics, NetworkPolicy, security review; tag v0.8.0
 - [ ] [v0.9.0] S48–51 — Distribution: operator Helm chart, `vilt` kubectl plugin, goreleaser + multi-arch + cosign + SBOM, docs; tag v0.9.0
 - [ ] [v1.0.0] S52–54 — API v1beta1 freeze, e2e across 3 k8s versions, 0.9 -> 1.0 upgrade test, CHANGELOG; tag v1.0.0
 - [ ] [owner] Decide whether to purge docs/devlog/test + the 97MB operator binary from git history (history rewrite + force push)
-- [ ] [owner] Install GitHub CLI (`winget install GitHub.cli`) and run `gh auth login` so session PRs open automatically
+- [ ] [owner] Install Docker Desktop so sessions can build and kind-test the operator image locally (CI covers it from S22)
 
 ## Completed
+- [x] [owner] Install GitHub CLI (`winget install GitHub.cli`) and run `gh auth login` so session PRs open automatically | Done: 09-27-2026
+- [x] [v0.1.0] S21 — Embed KB via go:embed, multi-stage Dockerfile, fill config/ (manager, kustomize), add missing RBAC markers (Flux helmreleases, Argo applications, secrets, leases, events), UI binds localhost + drop CORS * (+ CSRF and DNS-rebinding guards) | Done: 09-27-2026
 - [x] [v0.1.0] S20 — Repo hygiene: remove stray devlog/test + tracked binary, fix Makefile, LICENSE, README, bilingual devlog + PR workflow | Done: 09-27-2026
 - [x] S1–S19 — Scaffold, AI interface + adapters, CRDs, reconcilers, scanners (Flux/Helm/Argo/raw), matrix, Helm executor, UI scaffold, pull+push model | Done: 06-01-2026

@@ -1,6 +1,6 @@
 # Kube-Viltrumite — project handoff context
 
-Read this at the start of every session (CLAUDE.md → Session Workflow). It captures the project's current state, the audit findings, the roadmap to v1.0.0, and carried-forward prompts. Last updated 2026-09-27 (S20).
+Read this at the start of every session (CLAUDE.md → Session Workflow). It captures the project's current state, the audit findings, the roadmap to v1.0.0, and carried-forward prompts. Last updated 2026-09-27 (S21).
 
 ---
 
@@ -48,7 +48,8 @@ The engineer only ever writes `CompatibilityPolicy`. `StackUpgrade` is created e
 - Go 1.26 (see go.mod). Chosen over TypeScript for K8s-native ecosystem fit, Helm SDK access, single-binary distribution.
 - kubebuilder v4 layout, controller-runtime v0.23, k8s.io v0.35, helm.sh/helm/v3, React + Vite. Planned: go-git, go-github, Anthropic Go SDK.
 - controller-gen v0.21.0 runs via `go run ...@version` from the Makefile (no tools.go, no GOPATH install).
-- Knowledge base: YAML under `knowledge/tools/`, read from disk via `--knowledge-base-path` (go:embed lands in S21).
+- Knowledge base: YAML under `knowledge/tools/`, compiled into the binary via go:embed (`knowledge/embed.go`, `planner.Load(fs.FS)`). `--knowledge-base-path` optionally replaces it with a directory on disk.
+- Install: `make docker-build && make deploy` (kustomize `config/default` → namespace `viltrumite-system`, image `ghcr.io/jeikeibnaa/kube-viltrumite:dev`). The UI binds `127.0.0.1:8082` (`--ui-bind-address`) and is reached with `kubectl -n viltrumite-system port-forward deploy/viltrumite-controller-manager 8082` until auth lands (S37).
 - Workflow with Claude Code: one roadmap session = one fresh Claude Code session = one branch (`session/<N>-<topic>`) = one PR; always name exact files to touch; `make verify` before every commit. Full steps in CLAUDE.md.
 - Devlog: `docs/devlog/DEVLOG-YYYY-MM-DD-S<N>.md`, one file per session, English + Mongolian, with `docs/devlog/README.md` as the index.
 - Skills installed in `.claude/skills/`: `code-reviewer` (applied at end of each session) and `senior-prompt-engineer`.
@@ -57,7 +58,7 @@ The engineer only ever writes `CompatibilityPolicy`. `StackUpgrade` is created e
 
 ---
 
-## Current state (as of 2026-09-27)
+## Current state (as of 2026-09-27, after S21)
 
 Done — `go vet` and all unit tests green:
 
@@ -72,6 +73,7 @@ Done — `go vet` and all unit tests green:
 - Session 18: WorkloadScanner for raw `kubectl apply` installs (detection rules exist for cert-manager only).
 - Session 19: matrix helpers, CompatibilityPolicy tracked tools + autoplan, pull+push reconciler.
 - Session 20: repo hygiene (leaked `docs/devlog/test` and tracked `operator` binary removed from HEAD), Makefile rewrite (`verify`, `generate` = deepcopy + CRDs + RBAC, `ui`, working `run`), generated `config/rbac/role.yaml`, LICENSE (Apache-2.0), README, bilingual-devlog + PR-per-session workflow, roadmap in `todos.md`.
+- Session 21: knowledge base embedded (go:embed); multi-stage Dockerfile (distroless, UID 65532) + allowlist `.dockerignore`; kustomize install (`config/default`: CRDs, ClusterRole + namespaced lease Role and bindings, hardened Deployment with read-only root FS and probes on :8081); RBAC markers for Flux/Argo/Helm secrets/leases/events; UI server on loopback with `http.CrossOriginProtection`, a loopback Host check (DNS rebinding) and no CORS headers; `--ui-port` replaced by `--ui-bind-address`. Not yet verified: `docker build` and an in-cluster run (Docker was unavailable) — S22.
 
 Numbering note: the old plan's sessions 20–22 (dashboard, Plan upgrade, raw-install guard) are now S34, S35 and S29 in the v1.0 roadmap. Their detailed prompts are kept at the bottom of this file.
 
@@ -93,10 +95,11 @@ History note: an unrelated scratch file (`docs/devlog/test`) and the 97MB `opera
 | 6 | `CompareMinor` collapses patch versions (external-secrets `0.9.0` vs `0.9.5`). | S23 |
 | 7 | `incompatible_with` / `min_kubernetes` parsed but never enforced; no upgrade ordering; no multi-hop paths. | S28, S31–33 |
 | 8 | AIProvider built then discarded (`_ = aiProvider` in `cmd/operator/main.go`); Anthropic/OpenAI adapters return Noop; `spec.ai` ignored; prompts inline in `ollama.go`. | S38–40 |
-| 9 | UI server: no auth, `Access-Control-Allow-Origin: *`, approve endpoint mutates the cluster; approval stored in `status.phase`. | S21 (localhost + CORS), S27 (approval in spec), S37 (auth) |
+| 9 | UI server: no auth, `Access-Control-Allow-Origin: *`, approve endpoint mutates the cluster; approval stored in `status.phase`. | S21 ✅ (loopback bind, CORS removed, CSRF + DNS-rebinding guards), S27 (approval in spec), S37 (auth) |
 | 10 | `reconcileFailed` sets RolledBack without rolling back; `Requeue: true` used in three places. | S27, S29 |
-| 11 | Packaging: `config/manager` and `config/default` empty; no Dockerfile, CI or Helm chart; KB read from disk. | S21, S22, S48 |
-| 14 | Generated `config/rbac/role.yaml` lacks markers for what the operator really touches: Flux `helmreleases`, Argo `applications`, Helm release `secrets`, `coordination.k8s.io` leases and `events`. Deployed as-is, the scanners get "forbidden". | S21 |
+| 11 | Packaging: `config/manager` and `config/default` empty; no Dockerfile, CI or Helm chart; KB read from disk. | S21 ✅ (Dockerfile, kustomize, go:embed — image build unverified), S22 (CI), S48 (Helm chart) |
+| 14 | Generated `config/rbac/role.yaml` lacks markers for what the operator really touches: Flux `helmreleases`, Argo `applications`, Helm release `secrets`, `coordination.k8s.io` leases and `events`. Deployed as-is, the scanners get "forbidden". | S21 ✅ (in-cluster check in S22) |
+| 15 | The Helm SDK secret driver needs cluster-wide `secrets` get/list, so the operator can read every Secret; RBAC cannot filter by the `owner=helm` label. | S45 (e.g. per-`watchNamespaces` Roles) |
 | 12 | KB data stale (cert-manager ≤1.15, Argo CD ≤2.12, Istio ≤1.22) and unsourced. | S26 |
 | 13 | No tests for the CompatibilityPolicy reconciler. | S25 |
 

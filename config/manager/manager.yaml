@@ -1,0 +1,100 @@
+# The operator Deployment. Names and the "system" namespace are placeholders:
+# config/default adds the "viltrumite-" prefix and sets the namespace, so this
+# Namespace becomes viltrumite-system.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: system
+  labels:
+    app.kubernetes.io/name: kube-viltrumite
+    # The operator runs non-root, read-only and without capabilities.
+    pod-security.kubernetes.io/enforce: restricted
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: controller-manager
+  namespace: system
+  labels:
+    app.kubernetes.io/name: kube-viltrumite
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: controller-manager
+  namespace: system
+  labels:
+    app.kubernetes.io/name: kube-viltrumite
+    app.kubernetes.io/component: controller-manager
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kube-viltrumite
+      app.kubernetes.io/component: controller-manager
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kube-viltrumite
+        app.kubernetes.io/component: controller-manager
+    spec:
+      serviceAccountName: controller-manager
+      terminationGracePeriodSeconds: 10
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: manager
+          image: controller:latest # set by the images: entry in config/default
+          imagePullPolicy: IfNotPresent
+          # The image entrypoint already passes --ui-path=/ui. The UI keeps its
+          # default --ui-bind-address=127.0.0.1:8082: it has no authentication
+          # yet (S37), so it is not exposed on the pod IP. Reach it with
+          #   kubectl -n viltrumite-system port-forward deploy/viltrumite-controller-manager 8082
+          args:
+            - --leader-elect
+            - --health-probe-bind-address=:8081
+            - --metrics-bind-address=:8080
+          env:
+            # The Helm SDK and client-go's discovery cache write under $HOME;
+            # point it at the writable emptyDir because the root FS is read-only.
+            - name: HOME
+              value: /tmp
+          ports:
+            - name: health
+              containerPort: 8081
+              protocol: TCP
+            - name: metrics
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

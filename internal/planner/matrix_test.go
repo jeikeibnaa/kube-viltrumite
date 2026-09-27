@@ -3,59 +3,113 @@ package planner
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
+	"testing/fstest"
 
 	"github.com/jeikeibnaa/kube-viltrumite/internal/ai"
+	"github.com/jeikeibnaa/kube-viltrumite/knowledge"
 )
 
-// knowledgeToolsDir returns the absolute path to the knowledge/tools directory
-// regardless of where the test binary runs from.
-func knowledgeToolsDir(t *testing.T) string {
+// loadEmbedded loads the knowledge base compiled into the binary — the same
+// data the operator uses when --knowledge-base-path is not set.
+func loadEmbedded(t *testing.T) *Matrix {
 	t.Helper()
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("runtime.Caller failed")
+	m, err := Load(knowledge.Tools())
+	if err != nil {
+		t.Fatalf("Load(embedded): %v", err)
 	}
-	// file is .../internal/planner/matrix_test.go; go two dirs up to repo root
-	root := filepath.Join(filepath.Dir(file), "..", "..")
-	return filepath.Join(root, "knowledge", "tools")
+	return m
 }
 
 func TestLoad(t *testing.T) {
-	m, err := Load(knowledgeToolsDir(t))
+	if m := loadEmbedded(t); len(m.ListTools()) == 0 {
+		t.Fatal("embedded knowledge base has no tools")
+	}
+}
+
+func TestLoad_Errors(t *testing.T) {
+	tests := []struct {
+		name string
+		fsys fstest.MapFS
+	}{
+		{
+			name: "empty knowledge base",
+			fsys: fstest.MapFS{},
+		},
+		{
+			name: "only non-yaml files",
+			fsys: fstest.MapFS{
+				".gitkeep":  {},
+				"notes.txt": {Data: []byte("tool: not-yaml")},
+			},
+		},
+		{
+			name: "missing tool field",
+			fsys: fstest.MapFS{"bad.yaml": {Data: []byte("versions: []")}},
+		},
+		{
+			name: "duplicate tool name",
+			fsys: fstest.MapFS{
+				"a.yaml": {Data: toolYAML("duplicate-tool")},
+				"b.yaml": {Data: toolYAML("duplicate-tool")},
+			},
+		},
+		{
+			name: "invalid yaml",
+			fsys: fstest.MapFS{"broken.yaml": {Data: []byte("tool: [unclosed")}},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := Load(tc.fsys); err == nil {
+				t.Fatal("expected an error, got nil")
+			}
+		})
+	}
+}
+
+// TestLoad_IgnoresSubdirsAndOtherFiles checks that only top-level *.yaml files
+// are read, so stray files next to the knowledge base cannot break startup.
+func TestLoad_IgnoresSubdirsAndOtherFiles(t *testing.T) {
+	fsys := fstest.MapFS{
+		"cert-manager.yaml": {Data: toolYAML("cert-manager")},
+		".gitkeep":          {},
+		"README.md":         {Data: []byte("# not a tool")},
+		"drafts/istio.yaml": {Data: toolYAML("istio")},
+	}
+	m, err := Load(fsys)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if m == nil {
-		t.Fatal("Load returned nil matrix")
+	if got := m.ListTools(); !stringSliceEqual(got, []string{"cert-manager"}) {
+		t.Errorf("ListTools() = %v, want [cert-manager]", got)
+	}
+}
+
+// TestLoad_DirOverride covers --knowledge-base-path: a directory on disk
+// replaces the embedded knowledge base entirely.
+func TestLoad_DirOverride(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "velero.yaml"), toolYAML("velero"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := Load(os.DirFS(dir))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := m.ListTools(); !stringSliceEqual(got, []string{"velero"}) {
+		t.Errorf("ListTools() = %v, want [velero]", got)
 	}
 }
 
 func TestLoad_DirNotFound(t *testing.T) {
-	_, err := Load("/nonexistent/path/tools")
-	if err == nil {
+	if _, err := Load(os.DirFS(filepath.Join(t.TempDir(), "missing"))); err == nil {
 		t.Fatal("expected error for missing directory, got nil")
 	}
 }
 
-func TestLoad_MissingToolField(t *testing.T) {
-	tmp := t.TempDir()
-	bad := filepath.Join(tmp, "bad.yaml")
-	if err := writeFile(bad, "versions: []"); err != nil {
-		t.Fatal(err)
-	}
-	_, err := Load(tmp)
-	if err == nil {
-		t.Fatal("expected error for missing 'tool' field, got nil")
-	}
-}
-
 func TestResolve(t *testing.T) {
-	m, err := Load(knowledgeToolsDir(t))
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
+	m := loadEmbedded(t)
 
 	tests := []struct {
 		name                string
@@ -165,38 +219,17 @@ func TestResolve(t *testing.T) {
 	}
 }
 
-func TestLoad_DuplicateTool(t *testing.T) {
-	tmp := t.TempDir()
-	content := "tool: duplicate-tool\nversions: []\n"
-	if err := writeFile(filepath.Join(tmp, "a.yaml"), content); err != nil {
-		t.Fatal(err)
-	}
-	if err := writeFile(filepath.Join(tmp, "b.yaml"), content); err != nil {
-		t.Fatal(err)
-	}
-	_, err := Load(tmp)
-	if err == nil {
-		t.Fatal("expected error for duplicate tool name, got nil")
-	}
-}
-
 func TestResolve_UnknownTool(t *testing.T) {
-	m, err := Load(knowledgeToolsDir(t))
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	_, err = m.Resolve("velero", "1.0", "1.1")
+	m := loadEmbedded(t)
+	_, err := m.Resolve("velero", "1.0", "1.1")
 	if err == nil {
 		t.Fatal("expected error for unknown tool, got nil")
 	}
 }
 
 func TestResolve_UnknownVersion(t *testing.T) {
-	m, err := Load(knowledgeToolsDir(t))
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	_, err = m.Resolve("cert-manager", "1.15", "1.99")
+	m := loadEmbedded(t)
+	_, err := m.Resolve("cert-manager", "1.15", "1.99")
 	if err == nil {
 		t.Fatal("expected error for unknown version, got nil")
 	}
@@ -205,10 +238,7 @@ func TestResolve_UnknownVersion(t *testing.T) {
 // TestAllToolsLoaded verifies that every expected tool YAML file loads correctly
 // and meets minimum content requirements.
 func TestAllToolsLoaded(t *testing.T) {
-	m, err := Load(knowledgeToolsDir(t))
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
+	m := loadEmbedded(t)
 
 	expectedTools := []string{
 		"cert-manager",
@@ -266,10 +296,7 @@ func TestNormalizeVersion(t *testing.T) {
 // from the cluster scanner ("v1.13.0", "v1.14.0") must match knowledge-base
 // entries stored as major.minor ("1.14").
 func TestResolveNormalized(t *testing.T) {
-	m, err := Load(knowledgeToolsDir(t))
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
+	m := loadEmbedded(t)
 
 	entry, err := m.Resolve("cert-manager", "v1.13.0", "v1.14.0")
 	if err != nil {
@@ -310,10 +337,7 @@ func TestCompareMinor(t *testing.T) {
 }
 
 func TestListTools(t *testing.T) {
-	m, err := Load(knowledgeToolsDir(t))
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
+	m := loadEmbedded(t)
 
 	tools := m.ListTools()
 	found := false
@@ -335,10 +359,7 @@ func TestListTools(t *testing.T) {
 }
 
 func TestLatestSafeVersion(t *testing.T) {
-	m, err := Load(knowledgeToolsDir(t))
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
+	m := loadEmbedded(t)
 
 	tests := []struct {
 		name        string
@@ -424,7 +445,7 @@ func stringSliceEqual(a, b []string) bool {
 	return true
 }
 
-// writeFile writes content to path (helper for negative-case tests).
-func writeFile(path, content string) error {
-	return os.WriteFile(path, []byte(content), 0o644)
+// toolYAML returns a minimal valid knowledge-base document for tool.
+func toolYAML(tool string) []byte {
+	return []byte("tool: " + tool + "\nversions: []\n")
 }

@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	kubeviltrumitev1alpha1 "github.com/jeikeibnaa/kube-viltrumite/api/v1alpha1"
@@ -14,24 +16,37 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 )
 
+// DefaultBindAddress keeps the UI on the pod's loopback interface. The server
+// has no authentication yet and its approve endpoint mutates the cluster, so it
+// must only be reachable through kubectl port-forward until auth lands (S37).
+const DefaultBindAddress = "127.0.0.1:8082"
+
 // Server serves the React UI and JSON API endpoints.
 type Server struct {
 	client client.Client
-	port   int
+	addr   string
 	uiPath string
 }
 
-// NewServer creates a Server backed by the manager's client.
-func NewServer(mgr manager.Manager, port int, uiPath string) *Server {
+// NewServer creates a Server backed by the manager's client that listens on
+// addr (host:port, see DefaultBindAddress).
+func NewServer(mgr manager.Manager, addr, uiPath string) *Server {
 	return &Server{
 		client: mgr.GetClient(),
-		port:   port,
+		addr:   addr,
 		uiPath: uiPath,
 	}
 }
 
-// Start begins serving HTTP. Blocks until ctx is cancelled or a fatal error occurs.
-func (s *Server) Start(ctx context.Context) error {
+// Handler returns the routed HTTP handler. The UI and API share one origin, so
+// no CORS headers are sent and browsers block cross-origin reads. Two more
+// browser guards sit in front of the routes:
+//   - CrossOriginProtection rejects cross-origin writes (403). The approve POST
+//     has no body, which makes it a "simple" request that browsers send without
+//     a preflight, so dropping CORS headers alone does not stop it.
+//   - On a loopback bind, loopbackHostOnly rejects requests whose Host is not a
+//     loopback name, which blocks DNS rebinding.
+func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /api/health", s.handleHealth)
@@ -44,9 +59,19 @@ func (s *Server) Start(ctx context.Context) error {
 		mux.Handle("/", http.FileServer(http.Dir(s.uiPath)))
 	}
 
+	var h http.Handler = http.NewCrossOriginProtection().Handler(mux)
+	if isLoopback(s.addr) {
+		h = loopbackHostOnly(h)
+	}
+	return loggingMiddleware(h)
+}
+
+// Start begins serving HTTP. Blocks until ctx is cancelled or a fatal error occurs.
+func (s *Server) Start(ctx context.Context) error {
 	srv := &http.Server{
-		Addr:    fmt.Sprintf(":%d", s.port),
-		Handler: corsMiddleware(loggingMiddleware(mux)),
+		Addr:              s.addr,
+		Handler:           s.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	go func() {
@@ -56,7 +81,11 @@ func (s *Server) Start(ctx context.Context) error {
 		_ = srv.Shutdown(shutCtx)
 	}()
 
-	slog.Info("ui server starting", "port", s.port, "uiPath", s.uiPath)
+	if !isLoopback(s.addr) {
+		slog.Warn("ui server is reachable beyond loopback and has no authentication; anyone who can connect can approve upgrades",
+			"addr", s.addr)
+	}
+	slog.Info("ui server starting", "addr", s.addr, "uiPath", s.uiPath)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("ui server: %w", err)
 	}
@@ -168,13 +197,37 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-func corsMiddleware(next http.Handler) http.Handler {
+// isLoopback reports whether addr (host:port) binds only to a loopback
+// interface. An empty host (":8082") binds every interface.
+func isLoopback(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	return isLoopbackHost(host)
+}
+
+// isLoopbackHost reports whether host (no port) is "localhost" or a loopback IP.
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && ip.IsLoopback()
+}
+
+// loopbackHostOnly rejects requests whose Host header is not a loopback name.
+// It blocks DNS rebinding: a hostile page whose domain re-resolves to 127.0.0.1
+// is same-origin to the browser, so CrossOriginProtection lets it through, but
+// the browser still sends that domain as Host.
+func loopbackHostOnly(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
+		host := r.Host
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		if !isLoopbackHost(host) {
+			http.Error(w, "forbidden: the UI only answers requests addressed to localhost", http.StatusForbidden)
 			return
 		}
 		next.ServeHTTP(w, r)
