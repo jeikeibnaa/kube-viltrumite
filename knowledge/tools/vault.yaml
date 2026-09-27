@@ -1,21 +1,34 @@
-# Tool compatibility database entry for vault (hashicorp/vault Helm chart).
+# Knowledge base entry for vault (hashicorp/vault Helm chart).
 #
-# Schema:
-#   tool: string                          — canonical tool name
-#   versions[]:
-#     version: string                     — semver version string (Helm chart version)
-#     min_kubernetes: string              — earliest k8s minor that supports this version
-#     incompatible_with:                  — map of tool → list of known-bad version ranges
-#       <tool-name>: [string]
-#     breaking_changes[]:
-#       description: string               — human-readable summary
-#       type: string                      — api_removal | crd_migration | config_change | behaviour_change
-#     risk_level: string                  — low | medium | high
-#     upgrade_notes: string               — operator guidance when upgrading from previous version
+# Schema v2 (planner.Load rejects a file that breaks it; see internal/planner/matrix.go):
+#   tool: string                 — canonical tool name (lowercase letters, digits, '-'); file is <tool>.yaml
+#   aliases: [string]            — optional; other names scanners report for this tool, such as
+#                                  Helm chart names. A name belongs to one tool only.
+#   detection:                   — optional; how to find a raw `kubectl apply` install
+#     deployments[]: name, namespace_hint, container, image_contains, version_from
+#     labels: {string: string}
+#   versions[]:                  — ascending by app_version, no duplicates
+#     app_version: string        — upstream app version, full semver without "v" ("1.14.0").
+#                                  The entry also covers later patches of its minor, up to the next entry.
+#     chart_version: string      — Helm chart version that ships app_version, as published; ascending
+#     source: string             — release-notes URL for this version
+#     min_kubernetes: string     — earliest Kubernetes minor this version supports
+#     incompatible_with:         — optional; tool name or alias → app versions of that tool
+#       <tool>: [string]           known to break with this version
+#     breaking_changes[]:        — may be empty
+#       description: string      — human-readable summary
+#       type: string             — api_removal | crd_migration | config_change | behaviour_change
+#     risk_level: string         — low | medium | high | blocking: risk of upgrading to this version
+#     upgrade_notes: string      — operator guidance for the upgrade from the previous entry
+#
+# The entries describe vault-helm chart releases, so source links the chart's release notes.
 
 tool: vault
+
 versions:
-  - version: "0.24.0"
+  - app_version: "1.13.1"
+    chart_version: "0.24.0"
+    source: "https://github.com/hashicorp/vault-helm/releases/tag/v0.24.0"
     min_kubernetes: "1.20"
     incompatible_with:
       external-secrets:
@@ -32,9 +45,12 @@ versions:
       Update Helm values to rename server.ha.raft.config to server.ha.raft.config.content if
       using integrated Raft storage. Remove any cert-manager Certificate resources that previously
       managed the vault-agent-injector webhook TLS — the chart now handles this internally.
-      Upgrade external-secrets to >= 0.10.0 only after upgrading Vault to >= 0.25.0.
+      Upgrade external-secrets to >= 0.10.0 only after upgrading the Vault chart to >= 0.25.0
+      (Vault 1.14.0).
 
-  - version: "0.25.0"
+  - app_version: "1.14.0"
+    chart_version: "0.25.0"
+    source: "https://github.com/hashicorp/vault-helm/releases/tag/v0.25.0"
     min_kubernetes: "1.20"
     incompatible_with:
       external-secrets: []
@@ -50,11 +66,13 @@ versions:
       upgrading — the field is ignored but causes helm diff noise. Verify Raft node IDs in
       `vault operator raft list-peers` match Pod names after upgrade.
 
-  - version: "0.26.0"
+  - app_version: "1.15.1"
+    chart_version: "0.26.0"
+    source: "https://github.com/hashicorp/vault-helm/releases/tag/v0.26.0"
     min_kubernetes: "1.22"
     incompatible_with:
       external-secrets:
-        - "0.8.0"   # ESO 0.8 Vault dynamic secret refresh incompatible with Vault 0.26 token TTL enforcement
+        - "0.8.0"   # ESO 0.8 Vault dynamic secret refresh incompatible with Vault chart 0.26 token TTL enforcement
         - "0.9.0"
       cert-manager: []
     breaking_changes:
@@ -71,7 +89,9 @@ versions:
       that use vault-agent-injector — the new emptyDir requires additional ephemeral storage.
       Upgrade external-secrets to >= 0.9.5 before this Vault version.
 
-  - version: "0.27.0"
+  - app_version: "1.15.2"
+    chart_version: "0.27.0"
+    source: "https://github.com/hashicorp/vault-helm/releases/tag/v0.27.0"
     min_kubernetes: "1.22"
     incompatible_with:
       external-secrets: []
@@ -85,7 +105,9 @@ versions:
       injector.image.repository override into separate injector.image.repository (for the
       injector binary) and injector.agentImage.repository (for the vault-agent sidecar).
 
-  - version: "0.28.0"
+  - app_version: "1.16.1"
+    chart_version: "0.28.0"
+    source: "https://github.com/hashicorp/vault-helm/releases/tag/v0.28.0"
     min_kubernetes: "1.24"
     incompatible_with:
       external-secrets: []

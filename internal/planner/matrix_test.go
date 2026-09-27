@@ -1,8 +1,11 @@
 package planner
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 	"testing/fstest"
 
@@ -68,6 +71,234 @@ func TestLoad_Errors(t *testing.T) {
 	}
 }
 
+// TestLoad_Validation proves that Load enforces each schema rule: every case
+// breaks exactly one rule and must fail with a message that names it.
+func TestLoad_Validation(t *testing.T) {
+	tests := []struct {
+		name    string
+		fsys    fstest.MapFS
+		wantErr string
+	}{
+		{
+			name:    "empty file",
+			fsys:    fstest.MapFS{"a.yaml": {Data: []byte("")}},
+			wantErr: "missing 'tool' field",
+		},
+		{
+			name:    "tool name not a lowercase DNS label",
+			fsys:    fstest.MapFS{"a.yaml": {Data: doc("Cert-Manager", "", entry(nil))}},
+			wantErr: `tool name "Cert-Manager"`,
+		},
+		{
+			name:    "no versions",
+			fsys:    fstest.MapFS{"a.yaml": {Data: []byte("tool: a\nversions: []\n")}},
+			wantErr: "no versions",
+		},
+		{
+			name:    "schema v1 version key",
+			fsys:    fstest.MapFS{"a.yaml": {Data: doc("a", "", entry(map[string]string{"version": `"1.0.0"`}))}},
+			wantErr: "field version not found",
+		},
+		{
+			name: "second YAML document",
+			fsys: fstest.MapFS{"a.yaml": {Data: append(toolYAML("a"),
+				[]byte("---\ntool: b\nversions: []\n")...)}},
+			wantErr: "more than one YAML document",
+		},
+		{
+			name:    "misspelled top-level field",
+			fsys:    fstest.MapFS{"a.yaml": {Data: doc("a", "alias: [b]\n", entry(nil))}},
+			wantErr: "field alias not found",
+		},
+		{
+			name:    "missing app_version",
+			fsys:    fstest.MapFS{"a.yaml": {Data: doc("a", "", entry(map[string]string{"app_version": ""}))}},
+			wantErr: "missing app_version",
+		},
+		{
+			name:    "app_version does not parse",
+			fsys:    fstest.MapFS{"a.yaml": {Data: doc("a", "", entry(map[string]string{"app_version": `"one.two"`}))}},
+			wantErr: `app_version: invalid version "one.two"`,
+		},
+		{
+			name: "versions out of order",
+			fsys: fstest.MapFS{"a.yaml": {Data: doc("a", "",
+				entry(map[string]string{"app_version": `"1.1.0"`, "chart_version": `"1.0.0"`}),
+				entry(map[string]string{"app_version": `"1.0.0"`, "chart_version": `"1.1.0"`}),
+			)}},
+			wantErr: "app_version must be above the previous entry's 1.1.0",
+		},
+		{
+			name: "duplicate version written two ways",
+			fsys: fstest.MapFS{"a.yaml": {Data: doc("a", "",
+				entry(map[string]string{"app_version": `"1.0.0"`, "chart_version": `"1.0.0"`}),
+				entry(map[string]string{"app_version": `"v1.0"`, "chart_version": `"1.1.0"`}),
+			)}},
+			wantErr: "app_version must be above the previous entry's 1.0.0",
+		},
+		{
+			name: "chart versions out of order",
+			fsys: fstest.MapFS{"a.yaml": {Data: doc("a", "",
+				entry(map[string]string{"app_version": `"1.0.0"`, "chart_version": `"2.0.0"`}),
+				entry(map[string]string{"app_version": `"1.1.0"`, "chart_version": `"1.9.0"`}),
+			)}},
+			wantErr: "chart_version 1.9.0 must be above the previous entry's 2.0.0",
+		},
+		{
+			name:    "chart_version does not parse",
+			fsys:    fstest.MapFS{"a.yaml": {Data: doc("a", "", entry(map[string]string{"chart_version": "latest"}))}},
+			wantErr: `chart_version: invalid version "latest"`,
+		},
+		{
+			name:    "missing source",
+			fsys:    fstest.MapFS{"a.yaml": {Data: doc("a", "", entry(map[string]string{"source": ""}))}},
+			wantErr: "source: missing release-notes URL",
+		},
+		{
+			name:    "relative source",
+			fsys:    fstest.MapFS{"a.yaml": {Data: doc("a", "", entry(map[string]string{"source": "RELEASE-NOTES.md"}))}},
+			wantErr: "not an absolute http(s) URL",
+		},
+		{
+			name:    "non-http source",
+			fsys:    fstest.MapFS{"a.yaml": {Data: doc("a", "", entry(map[string]string{"source": "ftp://example.com/notes"}))}},
+			wantErr: "not an absolute http(s) URL",
+		},
+		{
+			name:    "missing min_kubernetes",
+			fsys:    fstest.MapFS{"a.yaml": {Data: doc("a", "", entry(map[string]string{"min_kubernetes": ""}))}},
+			wantErr: "missing min_kubernetes",
+		},
+		{
+			name:    "risk_level outside the enum",
+			fsys:    fstest.MapFS{"a.yaml": {Data: doc("a", "", entry(map[string]string{"risk_level": "severe"}))}},
+			wantErr: `risk_level "severe"`,
+		},
+		{
+			name:    "risk_level in upper case",
+			fsys:    fstest.MapFS{"a.yaml": {Data: doc("a", "", entry(map[string]string{"risk_level": "LOW"}))}},
+			wantErr: `risk_level "LOW"`,
+		},
+		{
+			name:    "missing risk_level",
+			fsys:    fstest.MapFS{"a.yaml": {Data: doc("a", "", entry(map[string]string{"risk_level": ""}))}},
+			wantErr: `risk_level ""`,
+		},
+		{
+			name:    "missing upgrade_notes",
+			fsys:    fstest.MapFS{"a.yaml": {Data: doc("a", "", entry(map[string]string{"upgrade_notes": ""}))}},
+			wantErr: "missing upgrade_notes",
+		},
+		{
+			name: "breaking change type outside the enum",
+			fsys: fstest.MapFS{"a.yaml": {Data: doc("a", "", entry(map[string]string{
+				"breaking_changes": `[{description: "flag renamed", type: api_change}]`,
+			}))}},
+			wantErr: `breaking_changes[0]: type "api_change"`,
+		},
+		{
+			name: "breaking change without description",
+			fsys: fstest.MapFS{"a.yaml": {Data: doc("a", "", entry(map[string]string{
+				"breaking_changes": `[{type: config_change}]`,
+			}))}},
+			wantErr: "breaking_changes[0]: missing description",
+		},
+		{
+			name: "incompatible_with names an unknown tool",
+			fsys: fstest.MapFS{"a.yaml": {Data: doc("a", "", entry(map[string]string{
+				"incompatible_with": `{ingress-nginx: ["1.9.0"]}`,
+			}))}},
+			wantErr: `incompatible_with names "ingress-nginx"`,
+		},
+		{
+			name: "incompatible_with version does not parse",
+			fsys: fstest.MapFS{
+				"a.yaml": {Data: doc("a", "", entry(map[string]string{"incompatible_with": `{b: ["latest"]}`}))},
+				"b.yaml": {Data: toolYAML("b")},
+			},
+			wantErr: `incompatible_with[b]: invalid version "latest"`,
+		},
+		{
+			name:    "alias not a lowercase DNS label",
+			fsys:    fstest.MapFS{"a.yaml": {Data: doc("a", "aliases: [Kube Prometheus]\n", entry(nil))}},
+			wantErr: `alias "Kube Prometheus"`,
+		},
+		{
+			name:    "alias repeats the tool name",
+			fsys:    fstest.MapFS{"a.yaml": {Data: doc("a", "aliases: [a]\n", entry(nil))}},
+			wantErr: `alias "a": name already used by tool "a"`,
+		},
+		{
+			name: "alias is another tool's name",
+			fsys: fstest.MapFS{
+				"a.yaml": {Data: doc("a", "aliases: [b]\n", entry(nil))},
+				"b.yaml": {Data: toolYAML("b")},
+			},
+			wantErr: `tool "b": name already used by tool "a"`,
+		},
+		{
+			name: "alias declared by two tools",
+			fsys: fstest.MapFS{
+				"a.yaml": {Data: doc("a", "aliases: [shared]\n", entry(nil))},
+				"b.yaml": {Data: doc("b", "aliases: [shared]\n", entry(nil))},
+			},
+			wantErr: `alias "shared": name already used by tool "a"`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Load(tc.fsys)
+			if err == nil {
+				t.Fatalf("expected an error containing %q, got nil", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error %q does not contain %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestLoad_ReportsEveryProblem checks that a knowledge-base author sees all
+// problems at once, each prefixed with its file, and that an invalid file
+// still counts as a known tool for the other files' incompatible_with.
+func TestLoad_ReportsEveryProblem(t *testing.T) {
+	fsys := fstest.MapFS{
+		"a.yaml": {Data: doc("a", "", entry(map[string]string{"source": "", "risk_level": "severe"}))},
+		"b.yaml": {Data: doc("b", "", entry(map[string]string{
+			"min_kubernetes":    "",
+			"incompatible_with": `{a: ["1.0.0"]}`,
+		}))},
+	}
+	_, err := Load(fsys)
+	if err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	for _, want := range []string{
+		"matrix: a.yaml: versions[0] (1.0.0): source: missing release-notes URL",
+		`matrix: a.yaml: versions[0] (1.0.0): risk_level "severe"`,
+		"matrix: b.yaml: versions[0] (1.0.0): missing min_kubernetes",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not contain %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), `incompatible_with names "a"`) {
+		t.Errorf("invalid a.yaml must still resolve as a tool name: %q", err)
+	}
+}
+
+// TestLoad_IncompatibleWithAlias checks that incompatible_with may name a
+// tool by one of its aliases.
+func TestLoad_IncompatibleWithAlias(t *testing.T) {
+	fsys := fstest.MapFS{
+		"a.yaml": {Data: doc("a", "aliases: [a-chart]\n", entry(nil))},
+		"b.yaml": {Data: doc("b", "", entry(map[string]string{"incompatible_with": `{a-chart: ["1.0.0"]}`}))},
+	}
+	if _, err := Load(fsys); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+}
+
 // TestLoad_IgnoresSubdirsAndOtherFiles checks that only top-level *.yaml files
 // are read, so stray files next to the knowledge base cannot break startup.
 func TestLoad_IgnoresSubdirsAndOtherFiles(t *testing.T) {
@@ -108,130 +339,42 @@ func TestLoad_DirNotFound(t *testing.T) {
 	}
 }
 
-func TestResolve(t *testing.T) {
+// TestKnowledgeBase is the validation test over the embedded knowledge base.
+// Load enforces the schema: every file parses with no unknown fields,
+// required fields are present, risk_level is in its enum, versions are
+// sorted and unique, incompatible_with keys are known tools or aliases, and
+// every version has a source (TestLoad_Validation shows each rule firing).
+// This test adds the conventions the shipped files keep on top of that.
+func TestKnowledgeBase(t *testing.T) {
 	m := loadEmbedded(t)
 
-	tests := []struct {
-		name                string
-		tool                string
-		fromVersion         string
-		toVersion           string
-		wantMinK8s          string
-		wantRisk            string
-		wantIncompatIngress []string
-		wantIncompatESO     []string
-		wantBreakingCount   int
-	}{
-		{
-			name:                "1.11 to 1.12",
-			tool:                "cert-manager",
-			fromVersion:         "1.11",
-			toVersion:           "1.12",
-			wantMinK8s:          "1.22",
-			wantRisk:            "medium",
-			wantIncompatIngress: []string{"1.3.0", "1.3.1"},
-			wantIncompatESO:     []string{},
-			wantBreakingCount:   2,
-		},
-		{
-			name:                "1.12 to 1.13",
-			tool:                "cert-manager",
-			fromVersion:         "1.12",
-			toVersion:           "1.13",
-			wantMinK8s:          "1.23",
-			wantRisk:            "low",
-			wantIncompatIngress: []string{"1.4.0"},
-			wantIncompatESO:     []string{"0.7.0", "0.7.1"},
-			wantBreakingCount:   2,
-		},
-		{
-			name:                "1.13 to 1.14",
-			tool:                "cert-manager",
-			fromVersion:         "1.13",
-			toVersion:           "1.14",
-			wantMinK8s:          "1.23",
-			wantRisk:            "low",
-			wantIncompatIngress: []string{},
-			wantIncompatESO:     []string{"0.8.0"},
-			wantBreakingCount:   2,
-		},
-		{
-			name:                "1.14 to 1.15",
-			tool:                "cert-manager",
-			fromVersion:         "1.14",
-			toVersion:           "1.15",
-			wantMinK8s:          "1.25",
-			wantRisk:            "high",
-			wantIncompatIngress: []string{"1.9.0"},
-			wantIncompatESO:     []string{"0.9.0", "0.9.1"},
-			wantBreakingCount:   3,
-		},
+	files, err := fs.Glob(knowledge.Tools(), "*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != len(m.tools) {
+		t.Errorf("%d files but %d tools", len(files), len(m.tools))
 	}
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			entry, err := m.Resolve(tc.tool, tc.fromVersion, tc.toVersion)
-			if err != nil {
-				t.Fatalf("Resolve: %v", err)
+	for _, f := range files {
+		name := strings.TrimSuffix(f, ".yaml")
+		t.Run(name, func(t *testing.T) {
+			tc, ok := m.tools[name]
+			if !ok {
+				t.Fatalf("%s must declare tool %q", f, name)
 			}
-
-			if entry.Tool != tc.tool {
-				t.Errorf("Tool: got %q, want %q", entry.Tool, tc.tool)
-			}
-			if entry.FromVersion != tc.fromVersion {
-				t.Errorf("FromVersion: got %q, want %q", entry.FromVersion, tc.fromVersion)
-			}
-			if entry.Version != tc.toVersion {
-				t.Errorf("Version: got %q, want %q", entry.Version, tc.toVersion)
-			}
-			if entry.MinKubernetes != tc.wantMinK8s {
-				t.Errorf("MinKubernetes: got %q, want %q", entry.MinKubernetes, tc.wantMinK8s)
-			}
-			if entry.RiskLevel != tc.wantRisk {
-				t.Errorf("RiskLevel: got %q, want %q", entry.RiskLevel, tc.wantRisk)
-			}
-			if entry.UpgradeNotes == "" {
-				t.Error("UpgradeNotes: must not be empty")
-			}
-
-			gotIngress := entry.IncompatibleWith["ingress-nginx"]
-			if !stringSliceEqual(gotIngress, tc.wantIncompatIngress) {
-				t.Errorf("IncompatibleWith[ingress-nginx]: got %v, want %v", gotIngress, tc.wantIncompatIngress)
-			}
-
-			gotESO := entry.IncompatibleWith["external-secrets"]
-			if !stringSliceEqual(gotESO, tc.wantIncompatESO) {
-				t.Errorf("IncompatibleWith[external-secrets]: got %v, want %v", gotESO, tc.wantIncompatESO)
-			}
-
-			if len(entry.BreakingChanges) != tc.wantBreakingCount {
-				t.Errorf("BreakingChanges count: got %d, want %d", len(entry.BreakingChanges), tc.wantBreakingCount)
-			}
-			for i, bc := range entry.BreakingChanges {
-				if bc.Description == "" {
-					t.Errorf("BreakingChanges[%d].Description is empty", i)
+			for _, v := range tc.Versions {
+				if want := normalizeVersion(v.AppVersion); v.AppVersion != want {
+					t.Errorf("app_version %q: write it as %q", v.AppVersion, want)
 				}
-				if bc.Type == "" {
-					t.Errorf("BreakingChanges[%d].Type is empty", i)
+				if v.ChartVersion == "" {
+					t.Errorf("%s: missing chart_version (every shipped tool has a Helm chart)", v.AppVersion)
+				}
+				if !strings.HasPrefix(v.Source, "https://") {
+					t.Errorf("%s: source %q is not https", v.AppVersion, v.Source)
 				}
 			}
 		})
-	}
-}
-
-func TestResolve_UnknownTool(t *testing.T) {
-	m := loadEmbedded(t)
-	_, err := m.Resolve("velero", "1.0", "1.1")
-	if err == nil {
-		t.Fatal("expected error for unknown tool, got nil")
-	}
-}
-
-func TestResolve_UnknownVersion(t *testing.T) {
-	m := loadEmbedded(t)
-	_, err := m.Resolve("cert-manager", "1.15", "1.99")
-	if err == nil {
-		t.Fatal("expected error for unknown version, got nil")
 	}
 }
 
@@ -271,16 +414,268 @@ func TestAllToolsLoaded(t *testing.T) {
 	}
 }
 
+func TestCanonicalName(t *testing.T) {
+	m := loadEmbedded(t)
+
+	tests := []struct {
+		name   string
+		want   string
+		wantOK bool
+	}{
+		{name: "prometheus-stack", want: "prometheus-stack", wantOK: true},
+		{name: "kube-prometheus-stack", want: "prometheus-stack", wantOK: true},
+		{name: "istiod", want: "istio", wantOK: true},
+		{name: "base", want: "istio", wantOK: true},
+		{name: "argocd", want: "argo-cd", wantOK: true},
+		{name: "argo-cd", want: "argo-cd", wantOK: true},
+		{name: "cert-manager", want: "cert-manager", wantOK: true},
+		{name: "ingress-nginx"},
+		{name: "Cert-Manager"},
+		{name: ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := m.CanonicalName(tc.name)
+			if got != tc.want || ok != tc.wantOK {
+				t.Errorf("CanonicalName(%q) = (%q, %v), want (%q, %v)", tc.name, got, ok, tc.want, tc.wantOK)
+			}
+		})
+	}
+}
+
+func TestDetections(t *testing.T) {
+	m := loadEmbedded(t)
+
+	d, ok := m.Detections()["cert-manager"]
+	if !ok || len(d.Deployments) == 0 {
+		t.Fatalf("cert-manager detection missing: %+v", d)
+	}
+	if got := d.Deployments[0].ImageContains; got != "cert-manager-controller" {
+		t.Errorf("ImageContains = %q, want cert-manager-controller", got)
+	}
+}
+
+func TestResolve(t *testing.T) {
+	m := loadEmbedded(t)
+
+	tests := []struct {
+		name              string
+		tool              string
+		fromVersion       string
+		toVersion         string
+		wantFrom          string
+		wantAppVersion    string
+		wantChartVersion  string
+		wantMinK8s        string
+		wantRisk          string
+		wantIncompatESO   []string
+		wantBreakingCount int
+	}{
+		{
+			name:              "1.11 to 1.12",
+			tool:              "cert-manager",
+			fromVersion:       "1.11",
+			toVersion:         "1.12",
+			wantFrom:          "1.11.0",
+			wantAppVersion:    "1.12.0",
+			wantChartVersion:  "v1.12.0",
+			wantMinK8s:        "1.22",
+			wantRisk:          "medium",
+			wantIncompatESO:   []string{},
+			wantBreakingCount: 2,
+		},
+		{
+			name:              "1.12 to 1.13",
+			tool:              "cert-manager",
+			fromVersion:       "1.12",
+			toVersion:         "1.13",
+			wantFrom:          "1.12.0",
+			wantAppVersion:    "1.13.0",
+			wantChartVersion:  "v1.13.0",
+			wantMinK8s:        "1.23",
+			wantRisk:          "low",
+			wantIncompatESO:   []string{"0.7.0", "0.7.1"},
+			wantBreakingCount: 2,
+		},
+		{
+			// The raw versions the cluster scanner reports must match the
+			// knowledge-base entries.
+			name:              "v1.13.0 to v1.14.0",
+			tool:              "cert-manager",
+			fromVersion:       "v1.13.0",
+			toVersion:         "v1.14.0",
+			wantFrom:          "1.13.0",
+			wantAppVersion:    "1.14.0",
+			wantChartVersion:  "v1.14.0",
+			wantMinK8s:        "1.23",
+			wantRisk:          "low",
+			wantIncompatESO:   []string{"0.8.0"},
+			wantBreakingCount: 2,
+		},
+		{
+			name:              "1.14 to 1.15",
+			tool:              "cert-manager",
+			fromVersion:       "1.14",
+			toVersion:         "1.15",
+			wantFrom:          "1.14.0",
+			wantAppVersion:    "1.15.0",
+			wantChartVersion:  "v1.15.0",
+			wantMinK8s:        "1.25",
+			wantRisk:          "high",
+			wantIncompatESO:   []string{"0.9.0", "0.9.1"},
+			wantBreakingCount: 3,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			entry, err := m.Resolve(tc.tool, tc.fromVersion, tc.toVersion)
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+
+			if entry.Tool != tc.tool {
+				t.Errorf("Tool: got %q, want %q", entry.Tool, tc.tool)
+			}
+			if entry.FromVersion != tc.wantFrom {
+				t.Errorf("FromVersion: got %q, want %q", entry.FromVersion, tc.wantFrom)
+			}
+			if entry.AppVersion != tc.wantAppVersion {
+				t.Errorf("AppVersion: got %q, want %q", entry.AppVersion, tc.wantAppVersion)
+			}
+			if entry.ChartVersion != tc.wantChartVersion {
+				t.Errorf("ChartVersion: got %q, want %q", entry.ChartVersion, tc.wantChartVersion)
+			}
+			if entry.MinKubernetes != tc.wantMinK8s {
+				t.Errorf("MinKubernetes: got %q, want %q", entry.MinKubernetes, tc.wantMinK8s)
+			}
+			if entry.RiskLevel != tc.wantRisk {
+				t.Errorf("RiskLevel: got %q, want %q", entry.RiskLevel, tc.wantRisk)
+			}
+			if entry.Source == "" {
+				t.Error("Source: must not be empty")
+			}
+			if entry.UpgradeNotes == "" {
+				t.Error("UpgradeNotes: must not be empty")
+			}
+
+			gotESO := entry.IncompatibleWith["external-secrets"]
+			if !stringSliceEqual(gotESO, tc.wantIncompatESO) {
+				t.Errorf("IncompatibleWith[external-secrets]: got %v, want %v", gotESO, tc.wantIncompatESO)
+			}
+
+			if len(entry.BreakingChanges) != tc.wantBreakingCount {
+				t.Errorf("BreakingChanges count: got %d, want %d", len(entry.BreakingChanges), tc.wantBreakingCount)
+			}
+		})
+	}
+}
+
+// TestResolve_Covering checks which entry a release resolves to: its own
+// entry, or the latest entry below it on the same major.minor line.
+func TestResolve_Covering(t *testing.T) {
+	m := loadEmbedded(t)
+
+	tests := []struct {
+		name      string
+		tool      string
+		from      string
+		to        string
+		wantTool  string
+		wantApp   string
+		wantChart string
+		wantRisk  string
+		wantFrom  string
+	}{
+		{
+			name: "patch release uses its minor's entry", tool: "cert-manager", from: "1.13.2", to: "v1.14.3",
+			wantTool: "cert-manager", wantApp: "1.14.0", wantChart: "v1.14.0", wantRisk: "low", wantFrom: "1.13.2",
+		},
+		{
+			// Audit finding #6: 0.9.0 and 0.9.5 are separate entries, so the
+			// low-risk patch must not resolve to the high-risk 0.9.0 entry.
+			name: "patch entry is not collapsed into its minor", tool: "external-secrets", from: "0.9.0", to: "0.9.5",
+			wantTool: "external-secrets", wantApp: "0.9.5", wantChart: "0.9.5", wantRisk: "low", wantFrom: "0.9.0",
+		},
+		{
+			name: "release after a patch entry uses the patch entry", tool: "external-secrets", from: "0.9.5", to: "0.9.7",
+			wantTool: "external-secrets", wantApp: "0.9.5", wantChart: "0.9.5", wantRisk: "low", wantFrom: "0.9.5",
+		},
+		{
+			name: "release before a patch entry uses the earlier entry", tool: "external-secrets", from: "0.8.0", to: "0.9.3",
+			wantTool: "external-secrets", wantApp: "0.9.0", wantChart: "0.9.0", wantRisk: "high", wantFrom: "0.8.0",
+		},
+		{
+			name: "two entries on one minor", tool: "vault", from: "1.15.1", to: "1.15.3",
+			wantTool: "vault", wantApp: "1.15.2", wantChart: "0.27.0", wantRisk: "medium", wantFrom: "1.15.1",
+		},
+		{
+			name: "alias resolves to the canonical tool", tool: "kube-prometheus-stack", from: "v0.63.0", to: "v0.66.0",
+			wantTool: "prometheus-stack", wantApp: "0.66.0", wantChart: "48.0.0", wantRisk: "high", wantFrom: "0.63.0",
+		},
+		{
+			name: "unparsable from version is kept as is", tool: "cert-manager", from: "unknown", to: "1.14",
+			wantTool: "cert-manager", wantApp: "1.14.0", wantChart: "v1.14.0", wantRisk: "low", wantFrom: "unknown",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			entry, err := m.Resolve(tc.tool, tc.from, tc.to)
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			if entry.Tool != tc.wantTool || entry.AppVersion != tc.wantApp || entry.ChartVersion != tc.wantChart ||
+				entry.RiskLevel != tc.wantRisk || entry.FromVersion != tc.wantFrom {
+				t.Errorf("Resolve(%q, %q, %q) = {Tool:%q App:%q Chart:%q Risk:%q From:%q}, want {Tool:%q App:%q Chart:%q Risk:%q From:%q}",
+					tc.tool, tc.from, tc.to,
+					entry.Tool, entry.AppVersion, entry.ChartVersion, entry.RiskLevel, entry.FromVersion,
+					tc.wantTool, tc.wantApp, tc.wantChart, tc.wantRisk, tc.wantFrom)
+			}
+		})
+	}
+}
+
+func TestResolve_Errors(t *testing.T) {
+	m := loadEmbedded(t)
+
+	tests := []struct {
+		name string
+		tool string
+		to   string
+	}{
+		{name: "unknown tool", tool: "velero", to: "1.1"},
+		{name: "version not in the knowledge base", tool: "cert-manager", to: "1.99"},
+		{name: "minor above the last entry", tool: "cert-manager", to: "1.16.0"},
+		{name: "minor below the first entry", tool: "cert-manager", to: "1.11.5"},
+		{name: "pre-release before its entry", tool: "cert-manager", to: "1.14.0-rc.1"},
+		{name: "unparsable target", tool: "cert-manager", to: "latest"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if entry, err := m.Resolve(tc.tool, "1.0.0", tc.to); err == nil {
+				t.Fatalf("expected an error, got entry %s", entry.AppVersion)
+			}
+		})
+	}
+}
+
 func TestNormalizeVersion(t *testing.T) {
 	tests := []struct {
 		input string
 		want  string
 	}{
-		{"v1.14.0", "1.14"},
-		{"1.14.2", "1.14"},
-		{"1.14", "1.14"},
-		{"v0.9.5", "0.9"},
+		{"v1.14.0", "1.14.0"},
+		{"1.14.2", "1.14.2"},
+		{"1.14", "1.14.0"},
+		{"v1", "1.0.0"},
+		{"V0.9.5", "0.9.5"},
+		{" 1.2.3 ", "1.2.3"},
+		{"1.14.0-rc.1", "1.14.0-rc.1"},
+		{"v1.14.0+build.5", "1.14.0+build.5"},
 		{"garbage", "garbage"},
+		{"latest", "latest"},
+		{"1.2.3.4", "1.2.3.4"},
+		{"", ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.input, func(t *testing.T) {
@@ -292,31 +687,7 @@ func TestNormalizeVersion(t *testing.T) {
 	}
 }
 
-// TestResolveNormalized covers the exact production failure: raw semver strings
-// from the cluster scanner ("v1.13.0", "v1.14.0") must match knowledge-base
-// entries stored as major.minor ("1.14").
-func TestResolveNormalized(t *testing.T) {
-	m := loadEmbedded(t)
-
-	entry, err := m.Resolve("cert-manager", "v1.13.0", "v1.14.0")
-	if err != nil {
-		t.Fatalf("Resolve with raw versions: %v", err)
-	}
-	if entry.FromVersion != "1.13" {
-		t.Errorf("FromVersion: got %q, want %q", entry.FromVersion, "1.13")
-	}
-	if normalizeVersion(entry.Version) != "1.14" {
-		t.Errorf("Version: got %q, want normalized 1.14", entry.Version)
-	}
-	if entry.MinKubernetes != "1.23" {
-		t.Errorf("MinKubernetes: got %q, want %q", entry.MinKubernetes, "1.23")
-	}
-	if entry.RiskLevel != "low" {
-		t.Errorf("RiskLevel: got %q, want %q", entry.RiskLevel, "low")
-	}
-}
-
-func TestCompareMinor(t *testing.T) {
+func TestCompareVersions(t *testing.T) {
 	tests := []struct {
 		a, b string
 		want int
@@ -324,13 +695,33 @@ func TestCompareMinor(t *testing.T) {
 		{"1.13", "1.14", -1},
 		{"1.14", "1.14", 0},
 		{"1.15", "1.14", 1},
+		{"0.9.0", "0.9.5", -1}, // audit finding #6: patches count
+		{"0.9.5", "0.9.0", 1},
+		{"v1.14.0", "1.14", 0},
+		{"1.9.0", "1.10.0", -1},
+		{"2.0.0", "1.99.99", 1},
+		{"1.14.0-rc.1", "1.14.0", -1},
+		{"1.14.0-alpha", "1.14.0-beta", -1},
+		{"1.14.0+a", "1.14.0+b", 0},
 	}
 	for _, tc := range tests {
-		name := tc.a + "_vs_" + tc.b
-		t.Run(name, func(t *testing.T) {
-			got := CompareMinor(tc.a, tc.b)
+		t.Run(tc.a+"_vs_"+tc.b, func(t *testing.T) {
+			got, err := CompareVersions(tc.a, tc.b)
+			if err != nil {
+				t.Fatalf("CompareVersions(%q, %q): %v", tc.a, tc.b, err)
+			}
 			if got != tc.want {
-				t.Errorf("CompareMinor(%q, %q) = %d, want %d", tc.a, tc.b, got, tc.want)
+				t.Errorf("CompareVersions(%q, %q) = %d, want %d", tc.a, tc.b, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCompareVersions_Errors(t *testing.T) {
+	for _, pair := range [][2]string{{"latest", "1.0.0"}, {"1.0.0", ""}, {"1.2.3.4", "1.2.3"}} {
+		t.Run(pair[0]+"_vs_"+pair[1], func(t *testing.T) {
+			if _, err := CompareVersions(pair[0], pair[1]); err == nil {
+				t.Errorf("CompareVersions(%q, %q): expected an error", pair[0], pair[1])
 			}
 		})
 	}
@@ -350,10 +741,14 @@ func TestListTools(t *testing.T) {
 	if !found {
 		t.Error("ListTools: expected cert-manager to be present")
 	}
-
-	for i := 1; i < len(tools); i++ {
-		if tools[i] < tools[i-1] {
-			t.Errorf("ListTools: result not sorted: %q before %q", tools[i-1], tools[i])
+	if !sort.StringsAreSorted(tools) {
+		t.Errorf("ListTools: result not sorted: %v", tools)
+	}
+	for _, alias := range []string{"kube-prometheus-stack", "istiod"} {
+		for _, n := range tools {
+			if n == alias {
+				t.Errorf("ListTools: alias %q listed as a tool", alias)
+			}
 		}
 	}
 }
@@ -371,21 +766,72 @@ func TestLatestSafeVersion(t *testing.T) {
 		wantFound   bool
 	}{
 		{
-			// 1.14 is low, 1.15 is high — only 1.14 qualifies at MEDIUM ceiling
-			name:        "medium tolerance above 1.13 finds 1.14",
+			// 1.14.0 is low, 1.15.0 is high — only 1.14.0 qualifies at MEDIUM ceiling
+			name:        "medium tolerance above 1.13 finds 1.14.0",
 			tool:        "cert-manager",
 			current:     "1.13",
 			tolerance:   ai.RiskMedium,
-			wantVersion: "1.14",
+			wantVersion: "1.14.0",
 			wantRisk:    ai.RiskLow,
 			wantFound:   true,
 		},
 		{
-			// 1.15 is the last entry; nothing above it
+			// 1.14.2 is past the 1.14.0 entry; 1.15.0 is above the ceiling
+			name:      "patch above an entry is not below it",
+			tool:      "cert-manager",
+			current:   "v1.14.2",
+			tolerance: ai.RiskMedium,
+			wantFound: false,
+		},
+		{
+			// 1.15.0 is the last entry; nothing above it
 			name:      "low tolerance above 1.15 finds nothing",
 			tool:      "cert-manager",
 			current:   "1.15",
 			tolerance: ai.RiskLow,
+			wantFound: false,
+		},
+		{
+			// Audit finding #6: the old major.minor comparison saw 0.10.5 as
+			// equal to 0.10.0 and never recommended the patch.
+			name:        "patch entry above the installed version",
+			tool:        "external-secrets",
+			current:     "v0.10.0",
+			tolerance:   ai.RiskLow,
+			wantVersion: "0.10.5",
+			wantRisk:    ai.RiskLow,
+			wantFound:   true,
+		},
+		{
+			name:        "installed patch entry itself is not recommended",
+			tool:        "external-secrets",
+			current:     "0.9.5",
+			tolerance:   ai.RiskMedium,
+			wantVersion: "0.10.5",
+			wantRisk:    ai.RiskLow,
+			wantFound:   true,
+		},
+		{
+			name:        "alias with an app version",
+			tool:        "kube-prometheus-stack",
+			current:     "v0.66.0",
+			tolerance:   ai.RiskMedium,
+			wantVersion: "0.76.0",
+			wantRisk:    ai.RiskMedium,
+			wantFound:   true,
+		},
+		{
+			name:      "unparsable installed version recommends nothing",
+			tool:      "cert-manager",
+			current:   "latest",
+			tolerance: ai.RiskHigh,
+			wantFound: false,
+		},
+		{
+			name:      "unknown tool",
+			tool:      "velero",
+			current:   "1.0.0",
+			tolerance: ai.RiskHigh,
 			wantFound: false,
 		},
 	}
@@ -394,7 +840,7 @@ func TestLatestSafeVersion(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			rec, risk, found := m.LatestSafeVersion(tc.tool, tc.current, tc.tolerance)
 			if found != tc.wantFound {
-				t.Fatalf("found=%v, want %v", found, tc.wantFound)
+				t.Fatalf("found=%v (rec=%q), want %v", found, rec, tc.wantFound)
 			}
 			if !found {
 				return
@@ -404,6 +850,28 @@ func TestLatestSafeVersion(t *testing.T) {
 			}
 			if risk != tc.wantRisk {
 				t.Errorf("risk=%q, want %q", risk, tc.wantRisk)
+			}
+		})
+	}
+}
+
+func TestLatestVersion(t *testing.T) {
+	m := loadEmbedded(t)
+
+	tests := []struct {
+		tool   string
+		want   string
+		wantOK bool
+	}{
+		{tool: "cert-manager", want: "1.15.0", wantOK: true},
+		{tool: "kube-prometheus-stack", want: "0.76.0", wantOK: true},
+		{tool: "velero"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.tool, func(t *testing.T) {
+			got, ok := m.LatestVersion(tc.tool)
+			if got != tc.want || ok != tc.wantOK {
+				t.Errorf("LatestVersion(%q) = (%q, %v), want (%q, %v)", tc.tool, got, ok, tc.want, tc.wantOK)
 			}
 		})
 	}
@@ -447,5 +915,42 @@ func stringSliceEqual(a, b []string) bool {
 
 // toolYAML returns a minimal valid knowledge-base document for tool.
 func toolYAML(tool string) []byte {
-	return []byte("tool: " + tool + "\nversions: []\n")
+	return doc(tool, "", entry(nil))
+}
+
+// doc renders a knowledge-base document for tool. header holds extra
+// top-level YAML (such as "aliases: [x]\n") placed before versions.
+func doc(tool, header string, entries ...string) []byte {
+	return []byte("tool: " + tool + "\n" + header + "versions:\n" + strings.Join(entries, ""))
+}
+
+// entry renders one version entry that passes every rule, with overrides
+// applied: a key maps to its raw YAML value, and an empty value drops the
+// field. Keys outside the defaults are appended in sorted order.
+func entry(overrides map[string]string) string {
+	keys := []string{"app_version", "chart_version", "source", "min_kubernetes", "risk_level", "upgrade_notes"}
+	values := map[string]string{
+		"app_version":    `"1.0.0"`,
+		"chart_version":  `"1.0.0"`,
+		"source":         `"https://example.com/releases/1.0.0"`,
+		"min_kubernetes": `"1.28"`,
+		"risk_level":     "low",
+		"upgrade_notes":  `"Read the release notes."`,
+	}
+	var extra []string
+	for k, v := range overrides {
+		if _, isDefault := values[k]; !isDefault {
+			extra = append(extra, k)
+		}
+		values[k] = v
+	}
+	sort.Strings(extra)
+
+	var lines []string
+	for _, k := range append(keys, extra...) {
+		if values[k] != "" {
+			lines = append(lines, k+": "+values[k])
+		}
+	}
+	return "  - " + strings.Join(lines, "\n    ") + "\n"
 }

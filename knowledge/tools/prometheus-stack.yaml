@@ -1,21 +1,37 @@
-# Tool compatibility database entry for prometheus-stack (kube-prometheus-stack Helm chart).
+# Knowledge base entry for prometheus-stack (kube-prometheus-stack Helm chart).
 #
-# Schema:
-#   tool: string                          — canonical tool name
-#   versions[]:
-#     version: string                     — semver version string (Helm chart version)
-#     min_kubernetes: string              — earliest k8s minor that supports this version
-#     incompatible_with:                  — map of tool → list of known-bad version ranges
-#       <tool-name>: [string]
-#     breaking_changes[]:
-#       description: string               — human-readable summary
-#       type: string                      — api_removal | crd_migration | config_change | behaviour_change
-#     risk_level: string                  — low | medium | high
-#     upgrade_notes: string               — operator guidance when upgrading from previous version
+# Schema v2 (planner.Load rejects a file that breaks it; see internal/planner/matrix.go):
+#   tool: string                 — canonical tool name (lowercase letters, digits, '-'); file is <tool>.yaml
+#   aliases: [string]            — optional; other names scanners report for this tool, such as
+#                                  Helm chart names. A name belongs to one tool only.
+#   detection:                   — optional; how to find a raw `kubectl apply` install
+#     deployments[]: name, namespace_hint, container, image_contains, version_from
+#     labels: {string: string}
+#   versions[]:                  — ascending by app_version, no duplicates
+#     app_version: string        — upstream app version, full semver without "v" ("1.14.0").
+#                                  The entry also covers later patches of its minor, up to the next entry.
+#     chart_version: string      — Helm chart version that ships app_version, as published; ascending
+#     source: string             — release-notes URL for this version
+#     min_kubernetes: string     — earliest Kubernetes minor this version supports
+#     incompatible_with:         — optional; tool name or alias → app versions of that tool
+#       <tool>: [string]           known to break with this version
+#     breaking_changes[]:        — may be empty
+#       description: string      — human-readable summary
+#       type: string             — api_removal | crd_migration | config_change | behaviour_change
+#     risk_level: string         — low | medium | high | blocking: risk of upgrading to this version
+#     upgrade_notes: string      — operator guidance for the upgrade from the previous entry
+#
+# The chart's appVersion is the prometheus-operator version it ships, so app_version is the
+# prometheus-operator version and each entry describes the chart major in chart_version.
 
 tool: prometheus-stack
+aliases:
+  - kube-prometheus-stack
+
 versions:
-  - version: "45.0.0"
+  - app_version: "0.63.0"
+    chart_version: "45.0.0"
+    source: "https://github.com/prometheus-community/helm-charts/releases/tag/kube-prometheus-stack-45.0.0"
     min_kubernetes: "1.21"
     incompatible_with:
       cert-manager: []
@@ -34,7 +50,9 @@ versions:
       recording rules that reference pod_namespace to use the namespace label. Consider deleting
       and recreating the Grafana PVC if persistent dashboard storage is not required.
 
-  - version: "48.0.0"
+  - app_version: "0.66.0"
+    chart_version: "48.0.0"
+    source: "https://github.com/prometheus-community/helm-charts/releases/tag/kube-prometheus-stack-48.0.0"
     min_kubernetes: "1.21"
     incompatible_with:
       cert-manager: []
@@ -53,7 +71,9 @@ versions:
       Move any --prometheus-config-reloader-cpu-request operator args to Helm values.
       Verify cluster is running Kubernetes >= 1.21.
 
-  - version: "51.0.0"
+  - app_version: "0.68.0"
+    chart_version: "51.0.0"
+    source: "https://github.com/prometheus-community/helm-charts/releases/tag/kube-prometheus-stack-51.0.0"
     min_kubernetes: "1.22"
     incompatible_with:
       cert-manager: []
@@ -68,7 +88,9 @@ versions:
       Migrate all AlertmanagerConfig resources from v1beta1 to v1 before upgrading.
       Requires Kubernetes >= 1.22.
 
-  - version: "55.0.0"
+  - app_version: "0.70.0"
+    chart_version: "55.0.0"
+    source: "https://github.com/prometheus-community/helm-charts/releases/tag/kube-prometheus-stack-55.0.0"
     min_kubernetes: "1.24"
     incompatible_with:
       cert-manager: []
@@ -86,7 +108,9 @@ versions:
       with grafana.adminPasswordKey pointing to a Kubernetes Secret. Audit ServiceMonitor
       manifests that set insecureSkipVerify — ensure the field is a plain bool not a pointer.
 
-  - version: "58.0.0"
+  - app_version: "0.73.0"
+    chart_version: "58.0.0"
+    source: "https://github.com/prometheus-community/helm-charts/releases/tag/kube-prometheus-stack-58.0.0"
     min_kubernetes: "1.25"
     incompatible_with:
       cert-manager: []
@@ -105,7 +129,9 @@ versions:
       upgrading. Update Helm values for Thanos sidecar to the new nested structure.
       Review Grafana data source provisioning — Grafana 10 enforces stricter UID validation.
 
-  - version: "62.0.0"
+  - app_version: "0.76.0"
+    chart_version: "62.0.0"
+    source: "https://github.com/prometheus-community/helm-charts/releases/tag/kube-prometheus-stack-62.0.0"
     min_kubernetes: "1.26"
     incompatible_with:
       cert-manager: []
