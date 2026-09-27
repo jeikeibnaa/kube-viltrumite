@@ -3,7 +3,6 @@
 Roadmap to v1.0.0. One item = one Claude Code session. See `docs/HANDOFF.md` for the full scope of each session.
 
 ## Active
-- [ ] [v0.1.0] S22 — GitHub Actions CI (vet, lint, test, generate-diff, image) + kind smoke test + `make e2e`; first real build of the S21 Dockerfile (Docker was unavailable in S21); README "Install in a cluster"; tag v0.1.0
 - [ ] [v0.2.0] S23 — KB schema v2: chart names/aliases, app_version vs chart_version, source links, real semver, KB validation test
 - [ ] [v0.2.0] S24 — Scanners: Flux helm.toolkit.fluxcd.io/v2, name by chart, report app version, Argo multi-source, detection for all 6 tools
 - [ ] [v0.2.0] S25 — CompatibilityPolicy reconciler tests + envtest
@@ -30,9 +29,12 @@ Roadmap to v1.0.0. One item = one Claude Code session. See `docs/HANDOFF.md` for
 - [ ] [v0.9.0] S48–51 — Distribution: operator Helm chart, `vilt` kubectl plugin, goreleaser + multi-arch + cosign + SBOM, docs; tag v0.9.0
 - [ ] [v1.0.0] S52–54 — API v1beta1 freeze, e2e across 3 k8s versions, 0.9 -> 1.0 upgrade test, CHANGELOG; tag v1.0.0
 - [ ] [owner] Decide whether to purge docs/devlog/test + the 97MB operator binary from git history (history rewrite + force push)
-- [ ] [owner] Install Docker Desktop so sessions can build and kind-test the operator image locally (CI covers it from S22)
+- [ ] [owner] Tag v0.1.0 once the S22 PR (jeikeibnaa/kube-viltrumite#3) is merged: `git tag -a v0.1.0 -m "v0.1.0" origin/main && git push origin v0.1.0`
+- [ ] [owner] Decide on Dependabot for `github-actions`: ci.yml pins actions by commit SHA, and Dependabot would open PRs to bump them
 
 ## Completed
+- [x] [v0.1.0] S22 — GitHub Actions CI (verify + generate-diff, golangci-lint + shellcheck, UI, image build, kind e2e) + `make e2e` kind smoke test, green in CI and locally; first real build of the S21 Dockerfile; README "Install in a cluster" (tagging v0.1.0 left to the owner) | Done: 09-27-2026
+- [x] [owner] Install Docker Desktop so sessions can build and kind-test the operator image locally (disk image on V:) | Done: 09-27-2026
 - [x] [owner] Install GitHub CLI (`winget install GitHub.cli`) and run `gh auth login` so session PRs open automatically | Done: 09-27-2026
 - [x] [v0.1.0] S21 — Embed KB via go:embed, multi-stage Dockerfile, fill config/ (manager, kustomize), add missing RBAC markers (Flux helmreleases, Argo applications, secrets, leases, events), UI binds localhost + drop CORS * (+ CSRF and DNS-rebinding guards) | Done: 09-27-2026
 - [x] [v0.1.0] S20 — Repo hygiene: remove stray devlog/test + tracked binary, fix Makefile, LICENSE, README, bilingual devlog + PR workflow | Done: 09-27-2026
