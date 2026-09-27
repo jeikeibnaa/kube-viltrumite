@@ -1,21 +1,38 @@
-# Tool compatibility database entry for istio.
+# Knowledge base entry for istio (Helm charts base and istiod).
 #
-# Schema:
-#   tool: string                          — canonical tool name
-#   versions[]:
-#     version: string                     — semver version string
-#     min_kubernetes: string              — earliest k8s minor that supports this version
-#     incompatible_with:                  — map of tool → list of known-bad version ranges
-#       <tool-name>: [string]
-#     breaking_changes[]:
-#       description: string               — human-readable summary
-#       type: string                      — api_removal | crd_migration | config_change | behaviour_change
-#     risk_level: string                  — low | medium | high
-#     upgrade_notes: string               — operator guidance when upgrading from previous version
+# Schema v2 (planner.Load rejects a file that breaks it; see internal/planner/matrix.go):
+#   tool: string                 — canonical tool name (lowercase letters, digits, '-'); file is <tool>.yaml
+#   aliases: [string]            — optional; other names scanners report for this tool, such as
+#                                  Helm chart names. A name belongs to one tool only.
+#   detection:                   — optional; how to find a raw `kubectl apply` install
+#     deployments[]: name, namespace_hint, container, image_contains, version_from
+#     labels: {string: string}
+#   versions[]:                  — ascending by app_version, no duplicates
+#     app_version: string        — upstream app version, full semver without "v" ("1.14.0").
+#                                  The entry also covers later patches of its minor, up to the next entry.
+#     chart_version: string      — Helm chart version that ships app_version, as published; ascending
+#     source: string             — release-notes URL for this version
+#     min_kubernetes: string     — earliest Kubernetes minor this version supports
+#     incompatible_with:         — optional; tool name or alias → app versions of that tool
+#       <tool>: [string]           known to break with this version
+#     breaking_changes[]:        — may be empty
+#       description: string      — human-readable summary
+#       type: string             — api_removal | crd_migration | config_change | behaviour_change
+#     risk_level: string         — low | medium | high | blocking: risk of upgrading to this version
+#     upgrade_notes: string      — operator guidance for the upgrade from the previous entry
+#
+# Istio's Helm charts (base, istiod, gateway) share the app version. "base" is a generic chart
+# name: a scanner should confirm the chart comes from Istio before mapping it to this tool.
 
 tool: istio
+aliases:
+  - istiod
+  - base
+
 versions:
-  - version: "1.18.0"
+  - app_version: "1.18.0"
+    chart_version: "1.18.0"
+    source: "https://istio.io/latest/news/releases/1.18.x/announcing-1.18/"
     min_kubernetes: "1.25"
     incompatible_with:
       cert-manager:
@@ -37,7 +54,9 @@ versions:
       namespace. Upgrade cert-manager to >= 1.13 before this Istio version to avoid ACME
       solver injection conflicts. Migrate EnvoyFilter resources away from proxy.metadata matchers.
 
-  - version: "1.19.0"
+  - app_version: "1.19.0"
+    chart_version: "1.19.0"
+    source: "https://istio.io/latest/news/releases/1.19.x/announcing-1.19/"
     min_kubernetes: "1.25"
     incompatible_with:
       cert-manager:
@@ -56,7 +75,9 @@ versions:
       Verify istio-ingressgateway Service type is explicitly set in helm values if using NodePort.
       Migrate Telemetry resources from v1alpha1 to v1 before upgrading.
 
-  - version: "1.20.0"
+  - app_version: "1.20.0"
+    chart_version: "1.20.0"
+    source: "https://istio.io/latest/news/releases/1.20.x/announcing-1.20/"
     min_kubernetes: "1.26"
     incompatible_with:
       cert-manager:
@@ -76,7 +97,9 @@ versions:
       Upgrade cert-manager to >= 1.14 before this Istio version to avoid mTLS strict mode
       blocking ACME HTTP01 challenge pods. Add explicit imagePullPolicy to all WasmPlugin resources.
 
-  - version: "1.21.0"
+  - app_version: "1.21.0"
+    chart_version: "1.21.0"
+    source: "https://istio.io/latest/news/releases/1.21.x/announcing-1.21/"
     min_kubernetes: "1.26"
     incompatible_with:
       cert-manager: []
@@ -95,7 +118,9 @@ versions:
       delete-and-recreate workflows. If CNI plugin is not desired, add
       --set components.cni.enabled=false to istioctl install invocations.
 
-  - version: "1.22.0"
+  - app_version: "1.22.0"
+    chart_version: "1.22.0"
+    source: "https://istio.io/latest/news/releases/1.22.x/announcing-1.22/"
     min_kubernetes: "1.27"
     incompatible_with:
       cert-manager:

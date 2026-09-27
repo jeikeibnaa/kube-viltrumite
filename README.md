@@ -34,8 +34,10 @@ what has to move first?"*
 ```
 
 The planner is driven by a curated compatibility knowledge base (`knowledge/tools/*.yaml`) that
-records, per tool version, the minimum Kubernetes version, known-incompatible versions of other
-tools, breaking changes, and a risk level.
+records, per tool version, the app and Helm chart versions, a release-notes link, the minimum
+Kubernetes version, known-incompatible versions of other tools, breaking changes, and a risk level.
+Each tool also lists the names scanners see for it (such as the chart `kube-prometheus-stack`). The
+operator validates the knowledge base when it loads and refuses to start on an invalid one.
 
 Two custom resources:
 
@@ -71,7 +73,7 @@ spec:
 |---|---|
 | CRDs, reconcilers, pull + push model | ✅ Working |
 | Detection: Helm, Flux `HelmRelease`, Argo CD `Application`, raw `kubectl apply` installs | 🟡 Working, accuracy fixes in v0.2.0 |
-| Compatibility knowledge base (6 tools) | 🟡 Present, being verified and refreshed in v0.2.0 |
+| Compatibility knowledge base (6 tools) | 🟡 Schema v2 (app/chart versions, aliases, release-notes links, validated on load); data verified and refreshed in v0.2.0 |
 | Upgrade execution (Helm SDK, atomic rollback) | 🔴 Experimental, reworked in v0.3.0 |
 | Cross-tool ordering and multi-step plans | 🔴 Planned for v0.4.0 |
 | Dashboard | 🟡 Upgrade list + approve; full dashboard in v0.5.0 |

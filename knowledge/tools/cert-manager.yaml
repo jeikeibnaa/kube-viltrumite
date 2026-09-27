@@ -1,17 +1,27 @@
-# Tool compatibility database entry for cert-manager.
+# Knowledge base entry for cert-manager.
 #
-# Schema:
-#   tool: string                          — canonical tool name
-#   versions[]:
-#     version: string                     — semver minor (e.g. "1.12")
-#     min_kubernetes: string              — earliest k8s minor that supports this version
-#     incompatible_with:                  — map of tool → list of known-bad version ranges
-#       <tool-name>: [string]
-#     breaking_changes[]:
-#       description: string               — human-readable summary
-#       type: string                      — api_removal | crd_migration | config_change | behaviour_change
-#     risk_level: string                  — low | medium | high
-#     upgrade_notes: string               — operator guidance when upgrading from previous minor
+# Schema v2 (planner.Load rejects a file that breaks it; see internal/planner/matrix.go):
+#   tool: string                 — canonical tool name (lowercase letters, digits, '-'); file is <tool>.yaml
+#   aliases: [string]            — optional; other names scanners report for this tool, such as
+#                                  Helm chart names. A name belongs to one tool only.
+#   detection:                   — optional; how to find a raw `kubectl apply` install
+#     deployments[]: name, namespace_hint, container, image_contains, version_from
+#     labels: {string: string}
+#   versions[]:                  — ascending by app_version, no duplicates
+#     app_version: string        — upstream app version, full semver without "v" ("1.14.0").
+#                                  The entry also covers later patches of its minor, up to the next entry.
+#     chart_version: string      — Helm chart version that ships app_version, as published; ascending
+#     source: string             — release-notes URL for this version
+#     min_kubernetes: string     — earliest Kubernetes minor this version supports
+#     incompatible_with:         — optional; tool name or alias → app versions of that tool
+#       <tool>: [string]           known to break with this version
+#     breaking_changes[]:        — may be empty
+#       description: string      — human-readable summary
+#       type: string             — api_removal | crd_migration | config_change | behaviour_change
+#     risk_level: string         — low | medium | high | blocking: risk of upgrading to this version
+#     upgrade_notes: string      — operator guidance for the upgrade from the previous entry
+
+tool: cert-manager
 
 detection:
   deployments:
@@ -23,14 +33,12 @@ detection:
   labels:
     app.kubernetes.io/name: cert-manager
 
-tool: cert-manager
 versions:
-  - version: "1.12"
+  - app_version: "1.12.0"
+    chart_version: "v1.12.0"
+    source: "https://github.com/cert-manager/cert-manager/releases/tag/v1.12.0"
     min_kubernetes: "1.22"
     incompatible_with:
-      ingress-nginx:
-        - "1.3.0"   # webhook timeout race; fixed in 1.3.1+
-        - "1.3.1"   # cert-manager annotation parsing regression
       external-secrets: []
     breaking_changes:
       - description: "cert-manager.io/v1alpha2 and v1alpha3 API versions removed from CRDs"
@@ -43,11 +51,11 @@ versions:
       any remaining v1alpha2/v1alpha3 resources to v1. Validate webhook connectivity
       with ingress-nginx >= 1.4.0.
 
-  - version: "1.13"
+  - app_version: "1.13.0"
+    chart_version: "v1.13.0"
+    source: "https://github.com/cert-manager/cert-manager/releases/tag/v1.13.0"
     min_kubernetes: "1.23"
     incompatible_with:
-      ingress-nginx:
-        - "1.4.0"   # IngressClass race condition with cert-manager challenge solver
       external-secrets:
         - "0.7.0"   # ESO ClusterSecretStore CRD field conflict introduced in this release
         - "0.7.1"
@@ -60,12 +68,14 @@ versions:
     upgrade_notes: >
       Verify cluster is running Kubernetes >= 1.23 before upgrading.
       Replace --acme-http01-solver-nameservers in operator args with
-      --dns01-recursive-nameservers if present.
+      --dns01-recursive-nameservers if present. Avoid ingress-nginx 1.4.0, which has an
+      IngressClass race condition with the cert-manager challenge solver.
 
-  - version: "1.14"
+  - app_version: "1.14.0"
+    chart_version: "v1.14.0"
+    source: "https://github.com/cert-manager/cert-manager/releases/tag/v1.14.0"
     min_kubernetes: "1.23"
     incompatible_with:
-      ingress-nginx: []
       external-secrets:
         - "0.8.0"   # ExternalSecret status condition schema changed; causes watch errors
     breaking_changes:
@@ -79,11 +89,11 @@ versions:
       The feature gate --enable-gateway-api is now on by default; remove it from operator args
       to avoid deprecation warnings.
 
-  - version: "1.15"
+  - app_version: "1.15.0"
+    chart_version: "v1.15.0"
+    source: "https://github.com/cert-manager/cert-manager/releases/tag/v1.15.0"
     min_kubernetes: "1.25"
     incompatible_with:
-      ingress-nginx:
-        - "1.9.0"   # Ingress status patch conflict when cert-manager manages TLS secret rotation
       external-secrets:
         - "0.9.0"   # PushSecret webhook validation rejects cert-manager-owned secrets
         - "0.9.1"
