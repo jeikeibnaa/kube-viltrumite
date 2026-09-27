@@ -1,13 +1,17 @@
 # Kube-Viltrumite — Dev Log Index
 
-| File | Session | Description |
-|---|---|---|
-| [DEVLOG-2026-04-28.md](./DEVLOG-2026-04-28.md) | Session 1–9 | Scaffold → AI interface → adapters → kubebuilder → CRDs → reconcilers |
-| [DEVLOG-2026-04-29.md](./DEVLOG-2026-04-29.md)| Session 9 | CompatibilityPolicy reconciler + cluster scanner |
-| [DEVLOG-2026-05-03.md](./DEVLOG-2026-05-03.md)| Session 10 | Multi-source scanner: plain Helm + ArgoCD + ScanAll unification |
-| [DEVLOG-2026-05-03.md](./DEVLOG-2026-05-03.md)| Session 11 | Compatibility matrix planner + knowledge YAML base (6 tools) |
-| [DEVLOG-2026-05-05.md](./DEVLOG-2026-05-05.md)| Session 12 | HelmExecutor: Helm SDK upgrade/rollback execution layer |
-| [DEVLOG-2026-05-11.md](./DEVLOG-2026-05-11.md)| Session 13 | Wire HelmExecutor into StackUpgrade reconciler + --dry-run flag |
-| [DEVLOG-2026-05-29.md](./DEVLOG-2026-05-29.md)| Session 14 | UI server (Go HTTP + JSON API) + React dashboard scaffold |
-| [DEVLOG-2026-05-31.md](./DEVLOG-2026-05-31.md)| Session 15 | Local cluster bootstrap + first end-to-end operator run |
-| [DEVLOG-2026-06-01.md](./DEVLOG-2026-06-01.md)| Session 19 | Matrix helpers (ListTools/LatestSafeVersion/RiskAtOrBelow), CompatibilityPolicy type extensions, reconciler rewrite (pull+push model) |
+From Session 20 on, each devlog is written in English and Mongolian (Монгол) and named
+`DEVLOG-YYYY-MM-DD-S<N>.md`.
+
+| File | Session | Description | Тайлбар |
+|---|---|---|---|
+| [DEVLOG-2026-04-28.md](./DEVLOG-2026-04-28.md) | Session 1–9 | Scaffold → AI interface → adapters → kubebuilder → CRDs → reconcilers | Суурь бүтэц → AI interface → adapter-ууд → kubebuilder → CRD → reconciler-ууд |
+| [DEVLOG-2026-04-29.md](./DEVLOG-2026-04-29.md) | Session 9 | CompatibilityPolicy reconciler + cluster scanner | CompatibilityPolicy reconciler + cluster scanner |
+| [DEVLOG-2026-05-03.md](./DEVLOG-2026-05-03.md) | Session 10 | Multi-source scanner: plain Helm + ArgoCD + ScanAll unification | Олон эх сурвалжтай scanner: энгийн Helm + ArgoCD + ScanAll нэгтгэл |
+| [DEVLOG-2026-05-03.md](./DEVLOG-2026-05-03.md) | Session 11 | Compatibility matrix planner + knowledge YAML base (6 tools) | Нийцлийн матриц planner + YAML мэдлэгийн сан (6 хэрэгсэл) |
+| [DEVLOG-2026-05-05.md](./DEVLOG-2026-05-05.md) | Session 12 | HelmExecutor: Helm SDK upgrade/rollback execution layer | HelmExecutor: Helm SDK-аар upgrade/rollback гүйцэтгэх давхарга |
+| [DEVLOG-2026-05-11.md](./DEVLOG-2026-05-11.md) | Session 13 | Wire HelmExecutor into StackUpgrade reconciler + --dry-run flag | HelmExecutor-ийг StackUpgrade reconciler-т холбох + --dry-run flag |
+| [DEVLOG-2026-05-29.md](./DEVLOG-2026-05-29.md) | Session 14 | UI server (Go HTTP + JSON API) + React dashboard scaffold | UI сервер (Go HTTP + JSON API) + React dashboard-ийн суурь |
+| [DEVLOG-2026-05-31.md](./DEVLOG-2026-05-31.md) | Session 15 | Local cluster bootstrap + first end-to-end operator run | Локал cluster бэлдэх + operator-ийг анх удаа эхнээс нь дуустал ажиллуулах |
+| [DEVLOG-2026-06-01.md](./DEVLOG-2026-06-01.md) | Session 19 | Matrix helpers (ListTools/LatestSafeVersion/RiskAtOrBelow), CompatibilityPolicy type extensions, reconciler rewrite (pull+push model) | Матрицын туслах функцууд (ListTools/LatestSafeVersion/RiskAtOrBelow), CompatibilityPolicy төрлийн өргөтгөл, reconciler-ийг дахин бичсэн (pull+push загвар) |
+| [DEVLOG-2026-09-27-S20.md](./DEVLOG-2026-09-27-S20.md) | Session 20 | Repo foundation: removed stray file + tracked binary, Makefile rewrite (pinned controller-gen, `verify`, RBAC generation), LICENSE, README, roadmap to v1.0.0, bilingual devlog + PR-per-session workflow | Repo-ийн суурь: илүү файл болон binary-г хассан, Makefile шинэчилсэн (controller-gen pin, `verify`, RBAC үүсгэх), LICENSE, README, v1.0.0 хүртэлх roadmap, хоёр хэлтэй devlog + session бүрт PR хийх ажлын урсгал |

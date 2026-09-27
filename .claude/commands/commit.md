@@ -19,9 +19,9 @@ Create well-formatted commit: $ARGUMENTS
 ## What This Command Does
 
 1. Unless specified with `--no-verify`, automatically runs pre-commit checks:
-   - `pnpm lint` to ensure code quality
-   - `pnpm build` to verify the build succeeds
-   - `pnpm generate:docs` to update documentation
+   - `make verify` — `go vet`, unit tests and the operator build
+   - `make generate` first when `api/v1alpha1/` or RBAC markers changed (commit the regenerated files)
+   - `cd ui && npm run build` when files under `ui/` changed
 2. Checks which files are staged with `git status`
 3. If 0 files are staged, automatically adds all modified and new files with `git add`
 4. Performs a `git diff` to understand what changes are being committed
@@ -152,11 +152,11 @@ Example of splitting commits:
 
 ## Command Options
 
-- `--no-verify`: Skip running the pre-commit checks (lint, build, generate:docs)
+- `--no-verify`: Skip running the pre-commit checks (`make verify`)
 
 ## Important Notes
 
-- By default, pre-commit checks (`pnpm lint`, `pnpm build`, `pnpm generate:docs`) will run to ensure code quality
+- By default, pre-commit checks (`make verify`: vet, unit tests, build) will run to ensure code quality
 - If these checks fail, you'll be asked if you want to proceed with the commit anyway or fix the issues first
 - If specific files are already staged, the command will only commit those files
 - If no files are staged, it will automatically stage all modified and new files

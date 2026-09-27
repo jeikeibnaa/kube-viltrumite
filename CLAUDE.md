@@ -34,9 +34,10 @@ docs/devlog/           — session devlogs (one file per session)
 ## Test Commands
 
 ```bash
+make verify      # go vet + unit tests + build — the pre-commit gate
 make test        # unit tests
-make e2e         # e2e against kind cluster
-make generate    # regenerate CRD manifests
+make generate    # regenerate deepcopy, CRD manifests and RBAC
+make e2e         # e2e against kind cluster (target lands in S22)
 ```
 
 ---
@@ -57,20 +58,27 @@ These tools are installed and ready. You MUST use them at the right moments
 
 | Command | What it does |
 |---|---|
-| `/commit` | Staged smart commit with conventional format + emoji. Runs lint+build first. |
+| `/commit` | Staged smart commit with conventional format + emoji. Runs `make verify` first. |
 | `/todo` | Manage `todos.md` — add, complete, list, remove tasks |
-| `/update-docs` | Sync devlog, README, and docs after a session |
+| `/update-docs` | Write the bilingual (English + Mongolian) session devlog, update the index and README |
 
 ---
 
 ## Session Workflow
 
-Follow this order every session. Do not skip steps.
+One roadmap session (S20, S21, …) = one Claude Code session = one branch = one pull request.
+The roadmap lives in `todos.md`; the scope, context and known issues for each session live in
+`docs/HANDOFF.md`. Follow this order every session. Do not skip steps.
+
+### Start of session
+1. Read `docs/HANDOFF.md`, then run `/todo list` and take the first open session.
+2. Sync main: `git checkout main && git pull`. If the previous session's PR is not merged yet,
+   ask the user before branching.
+3. Branch: `git checkout -b session/<N>-<short-topic>` (e.g. `session/21-embed-kb-docker`).
 
 ### During the session
-1. Check open tasks: `/todo list`
-2. Work on the goal.
-3. When writing or modifying AI prompts in `internal/ai/` — invoke the `senior-prompt-engineer` skill.
+- Stay inside that session's scope. Park anything else with `/todo add`.
+- When writing or modifying AI prompts in `internal/ai/` — invoke the `senior-prompt-engineer` skill.
 
 ### End of session (mandatory, in this order)
 
@@ -80,23 +88,40 @@ Say: "Use the code-reviewer skill to review [files changed]"
 Output all findings before moving on.
 
 **Step 2 — Commit**
-Run `/commit` — it will lint, build, and format the commit message.
-If lint/build fails, fix before committing.
+Run `/commit` — its gate is `make verify` (vet + test + build).
+If the gate fails, fix before committing.
 
-**Step 3 — Docs**
-Run `/update-docs` — it writes today's devlog and updates the index.
+**Step 3 — Docs (bilingual)**
+Run `/update-docs` — it writes the session devlog in English and Mongolian and updates the index.
 
 **Step 4 — Todo sync**
 Mark completed tasks: `/todo complete N`
-Add next session tasks: `/todo add "..."`
+Add follow-up tasks: `/todo add "..."`
+Then commit the docs and todos (`📝 docs: S<N> devlog and todo sync`).
+
+**Step 5 — Pull request**
+Push the branch and open a PR against `main` with `gh pr create`.
+Title: `S<N>: <goal>`. Body: summary, verification output, link to the devlog, and a short
+Mongolian summary. If `gh` is unavailable, push and give the user the compare URL
+`https://github.com/jeikeibnaa/kube-viltrumite/compare/main...<branch>?expand=1`.
+
+**Step 6 — Queue the next session**
+Create a spawn-task chip titled `Start S<N+1>: <topic>` with a self-contained prompt:
+read CLAUDE.md and `docs/HANDOFF.md`, then run session S<N+1> from `todos.md` following this
+Session Workflow. The user clicks it to start the next session in a fresh context. Where chips are
+not available (terminal CLI), print that prompt in a code block for the user to paste into `claude`.
 
 ---
 
 ## Devlog Rules
 
-- File: `docs/devlog/DEVLOG-YYYY-MM-DD.md`
-- Index: `docs/devlog/README.md` — one row per session
-- Template is enforced by the `/update-docs` command (see below)
+- File: `docs/devlog/DEVLOG-YYYY-MM-DD-S<N>.md` (e.g. `DEVLOG-2026-09-27-S20.md`). The session
+  number keeps two sessions on the same day from stacking into one file. Older date-only files
+  keep their names.
+- Bilingual: the English section comes first, then a full Mongolian (Cyrillic) section with the
+  same headings. File names, CRD fields, commands and error text stay verbatim in both.
+- Index: `docs/devlog/README.md` — one row per session, English and Mongolian descriptions
+- Template is enforced by the `/update-docs` command
 - Never edit devlog files manually mid-session — the command handles it
 
 ---
@@ -134,7 +159,9 @@ When working in `internal/ai/`:
 
 | What | Where |
 |---|---|
-| Session devlogs | `docs/devlog/DEVLOG-YYYY-MM-DD.md` |
+| Session devlogs | `docs/devlog/DEVLOG-YYYY-MM-DD-S<N>.md` |
+| Roadmap + open tasks | `todos.md` |
+| Session scope + context | `docs/HANDOFF.md` |
 | Devlog index | `docs/devlog/README.md` |
 | Architecture decisions | `docs/adr/` |
 | API reference | `docs/api.md` |
