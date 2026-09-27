@@ -1,0 +1,49 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role
+rules:
+- apiGroups:
+  - apps
+  resources:
+  - daemonsets
+  - deployments
+  verbs:
+  - list
+  - watch
+- apiGroups:
+  - kubeviltrumite.io
+  resources:
+  - compatibilitypolicies
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - kubeviltrumite.io
+  resources:
+  - compatibilitypolicies/status
+  verbs:
+  - patch
+  - update
+- apiGroups:
+  - kubeviltrumite.io
+  resources:
+  - stackupgrades
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - kubeviltrumite.io
+  resources:
+  - stackupgrades/status
+  verbs:
+  - get
+  - patch
+  - update
