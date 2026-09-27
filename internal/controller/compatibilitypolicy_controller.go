@@ -37,6 +37,13 @@ type CompatibilityPolicyReconciler struct {
 //+kubebuilder:rbac:groups=kubeviltrumite.io,resources=stackupgrades/status,verbs=update;patch
 //+kubebuilder:rbac:groups=apps,resources=deployments;daemonsets,verbs=list;watch
 
+// Scanner reads. Flux HelmReleases and Argo CD Applications go through the
+// unstructured client; plain Helm releases are stored as Secrets, which the
+// Helm SDK lists directly (the HelmExecutor reads them too).
+//+kubebuilder:rbac:groups=helm.toolkit.fluxcd.io,resources=helmreleases,verbs=get;list;watch
+//+kubebuilder:rbac:groups=argoproj.io,resources=applications,verbs=get;list;watch
+//+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list
+
 func (r *CompatibilityPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
