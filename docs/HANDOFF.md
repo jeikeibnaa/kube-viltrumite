@@ -1,6 +1,6 @@
 # Kube-Viltrumite — project handoff context
 
-Paste this into a new chat to give full context on the project's current state and the planned work. This captures decisions and prompts as of 2026-06-01.
+Read this at the start of every session (CLAUDE.md → Session Workflow). It captures the project's current state, the audit findings, the roadmap to v1.0.0, and carried-forward prompts. Last updated 2026-09-27 (S20).
 
 ---
 
@@ -45,50 +45,93 @@ The engineer only ever writes `CompatibilityPolicy`. `StackUpgrade` is created e
 
 ## Tech stack and conventions
 
-- Go 1.23 (required by kubebuilder v4). Chosen over TypeScript for K8s-native ecosystem fit, Helm SDK access, single-binary distribution.
-- kubebuilder v4, controller-runtime, helm.sh/helm/v3, go-git, go-github, Anthropic Go SDK, React + Vite.
-- Knowledge base: YAML, embedded via go:embed.
-- Workflow with Claude Code: one session = one package; always name exact files to touch; end every prompt with "run tests, fix errors before stopping"; commit after every session; use `--continue` for small follow-ups.
-- Devlog: `docs/devlog/DEVLOG-{date}.md`, one file per session, with `docs/devlog/README.md` as the index.
+- Go 1.26 (see go.mod). Chosen over TypeScript for K8s-native ecosystem fit, Helm SDK access, single-binary distribution.
+- kubebuilder v4 layout, controller-runtime v0.23, k8s.io v0.35, helm.sh/helm/v3, React + Vite. Planned: go-git, go-github, Anthropic Go SDK.
+- controller-gen v0.21.0 runs via `go run ...@version` from the Makefile (no tools.go, no GOPATH install).
+- Knowledge base: YAML under `knowledge/tools/`, read from disk via `--knowledge-base-path` (go:embed lands in S21).
+- Workflow with Claude Code: one roadmap session = one fresh Claude Code session = one branch (`session/<N>-<topic>`) = one PR; always name exact files to touch; `make verify` before every commit. Full steps in CLAUDE.md.
+- Devlog: `docs/devlog/DEVLOG-YYYY-MM-DD-S<N>.md`, one file per session, English + Mongolian, with `docs/devlog/README.md` as the index.
 - Skills installed in `.claude/skills/`: `code-reviewer` (applied at end of each session) and `senior-prompt-engineer`.
 - Custom commands in `.claude/commands/`: `commit`, `todo`, `update-docs`.
 - README must disclaim no affiliation with Skybound / Image Comics; avoid official *Invincible* artwork/logos.
 
 ---
 
-## Current state (as of 2026-06-01)
+## Current state (as of 2026-09-27)
 
-Done and passing tests:
+Done — `go vet` and all unit tests green:
 
 - Sessions 1–5: scaffold, AIProvider interface + types, Noop adapter, Ollama adapter, first knowledge base entry (cert-manager) + matrix resolver.
 - Session 6: kubebuilder scaffold (hit go-version and existing-files issues; resolved via manual scaffold).
-- Sessions 7–8: CRD types (`StackUpgrade`, `CompatibilityPolicy`); StackUpgrade reconciler phase state machine (logging stub, no real Helm yet).
+- Sessions 7–8: CRD types (`StackUpgrade`, `CompatibilityPolicy`); StackUpgrade reconciler phase state machine.
 - Session 9: CompatibilityPolicy reconciler + cluster scanner (FluxCD).
 - Session 10: main.go wiring (operator builds and runs).
-- Session 11–12 (multi-source scanner): plain Helm + ArgoCD + `ScanAll` unification.
-- Session 17: version normalization in the planner (fixed the `v1.14.0` vs `1.14` mismatch). normalizeVersion, CompareMinor added.
+- Sessions 11–12: plain Helm + ArgoCD scanners, `ScanAll`; HelmExecutor.
+- Sessions 13–15: executor wired into the reconciler, UI server + React scaffold, local cluster bootstrap.
+- Session 17: version normalization in the planner (`v1.14.0` vs `1.14`).
+- Session 18: WorkloadScanner for raw `kubectl apply` installs (detection rules exist for cert-manager only).
+- Session 19: matrix helpers, CompatibilityPolicy tracked tools + autoplan, pull+push reconciler.
+- Session 20: repo hygiene (leaked `docs/devlog/test` and tracked `operator` binary removed from HEAD), Makefile rewrite (`verify`, `generate` = deepcopy + CRDs + RBAC, `ui`, working `run`), generated `config/rbac/role.yaml`, LICENSE (Apache-2.0), README, bilingual-devlog + PR-per-session workflow, roadmap in `todos.md`.
 
-Known issues found in testing:
-
-- Raw `kubectl apply` installs (e.g. cert-manager installed directly) are NOT detected by the Helm/Flux/ArgoCD scanner — needs the workload scanner (Session 18).
-- The Helm executor cannot upgrade raw-installed tools (no Helm release) — returns "release not found". Needs an explicit guard (Session 22).
-
-Not yet built:
-
-- Workload scanner for raw installs (Session 18)
-- Tracked-tools list + status report + pull/push modes (Session 19)
-- UI tracked-tools dashboard (Session 20)
-- "Plan upgrade" UI action (Session 21)
-- Raw-install execution guard (Session 22)
-- Later: git repo scanner, GitHub PR generation, Helm chart for install, Docker image, first release.
+Numbering note: the old plan's sessions 20–22 (dashboard, Plan upgrade, raw-install guard) are now S34, S35 and S29 in the v1.0 roadmap. Their detailed prompts are kept at the bottom of this file.
 
 Note: the actual API group/import path is `kubeviltrumite.io/v1alpha1` (no `stack.` prefix). Any new code must read the existing types file and match it rather than assume a group.
 
+History note: an unrelated scratch file (`docs/devlog/test`) and the 97MB `operator` binary were removed from HEAD in S20 but still exist in git history. Purging them needs a history rewrite + force push — only on the user's explicit go-ahead.
+
 ---
 
-## Next sessions (18–22) — exact Claude Code prompts
+## Audit findings (2026-09-27) and where they get fixed
 
-### Session 18 — Workload scanner for raw installs + detection metadata
+| # | Finding | Fixed in |
+|---|---|---|
+| 1 | `reconcileUpgrading` passes the tool name as both Helm release name and chart ref, with no namespace — real upgrades fail with "release not found" regardless of install method. | S27, S29 |
+| 2 | `helm upgrade` against Flux/Argo-managed releases is reverted by the GitOps controller. | S29 (route/block), S42–44 (PR mode) |
+| 3 | KB mixes app versions (argo-cd, istio, cert-manager) with chart versions (vault, prometheus-stack); the Helm scanner reports chart versions. | S23, S24 |
+| 4 | Tool names: Helm scanner uses the chart name (`kube-prometheus-stack` ≠ `prometheus-stack`; istio charts are `base`/`istiod`); Flux scanner uses the HelmRelease object name. | S23, S24 |
+| 5 | Flux scanner uses `helm.toolkit.fluxcd.io/v2beta1`, removed in newer Flux — silently finds nothing. | S24 |
+| 6 | `CompareMinor` collapses patch versions (external-secrets `0.9.0` vs `0.9.5`). | S23 |
+| 7 | `incompatible_with` / `min_kubernetes` parsed but never enforced; no upgrade ordering; no multi-hop paths. | S28, S31–33 |
+| 8 | AIProvider built then discarded (`_ = aiProvider` in `cmd/operator/main.go`); Anthropic/OpenAI adapters return Noop; `spec.ai` ignored; prompts inline in `ollama.go`. | S38–40 |
+| 9 | UI server: no auth, `Access-Control-Allow-Origin: *`, approve endpoint mutates the cluster; approval stored in `status.phase`. | S21 (localhost + CORS), S27 (approval in spec), S37 (auth) |
+| 10 | `reconcileFailed` sets RolledBack without rolling back; `Requeue: true` used in three places. | S27, S29 |
+| 11 | Packaging: `config/manager` and `config/default` empty; no Dockerfile, CI or Helm chart; KB read from disk. | S21, S22, S48 |
+| 14 | Generated `config/rbac/role.yaml` lacks markers for what the operator really touches: Flux `helmreleases`, Argo `applications`, Helm release `secrets`, `coordination.k8s.io` leases and `events`. Deployed as-is, the scanners get "forbidden". | S21 |
+| 12 | KB data stale (cert-manager ≤1.15, Argo CD ≤2.12, Istio ≤1.22) and unsourced. | S26 |
+| 13 | No tests for the CompatibilityPolicy reconciler. | S25 |
+
+---
+
+## Roadmap to v1.0.0
+
+One line per session lives in `todos.md`. Milestone exit criteria:
+
+- **v0.1.0 (S20–22):** `make verify` and CI green; operator image builds; `kubectl apply -k config/default` runs the operator in kind; smoke test sees `status.mode` populated.
+- **v0.2.0 (S23–26):** every KB tool detected with the right name and version across Helm, Flux v2, Argo CD and raw installs; KB entries carry source links and pass a validation test.
+- **v0.3.0 (S27–30):** approve → upgrade succeeds for a Helm-managed tool on kind; raw and GitOps-managed tools end in clear terminal states; pre-flight blocks incompatible upgrades.
+- **v0.4.0 (S31–33):** plans are multi-step and ordered; one-minor-at-a-time where the KB requires it.
+- **v0.5.0 (S34–37):** dashboard shows tracked tools, creates and approves plans; every mutating endpoint is authenticated and authorized.
+- **v0.6.0 (S38–41):** provider configured from the policy; AI summaries on plans; AI can raise but never lower KB risk; eval harness in place.
+- **v0.7.0 (S42–44):** GitOps-managed tools get a PR instead of a direct upgrade.
+- **v0.8.0 (S45–47):** least-privilege RBAC, CEL validation, audit Events, metrics.
+- **v0.9.0 (S48–51):** Helm chart, `vilt` kubectl plugin, signed multi-arch images, docs.
+- **v1.0.0 (S52–54):** API frozen as `v1beta1`; e2e across three Kubernetes versions.
+
+Open decisions (recommendation in brackets):
+
+- GitOps-managed tools in 1.0: PR generation vs plan-only [PR generation — keeps v0.7.0 in scope].
+- API version at 1.0: [break freely in `v1alpha1` until 0.9, then freeze as `v1beta1`].
+- License: Apache-2.0 chosen in S20 as the Kubernetes-ecosystem default; change before v0.1.0 if needed.
+
+---
+
+## Detailed prompts (18–19 done; old 20–22 carried forward as S34, S35, S29)
+
+Before using a carried-forward prompt, re-read the files it names — the code will have moved on
+since these were written (for example, S23 changes the knowledge base schema and S27 changes the
+StackUpgrade spec).
+
+### Session 18 — Workload scanner for raw installs + detection metadata (done)
 
 ```
 Read CLAUDE.md first.
@@ -176,7 +219,7 @@ Fix all errors before stopping.
 Apply code-reviewer skill to workload.go. Report findings.
 ```
 
-### Session 19 — Matrix helpers + tracked tools + pull AND push modes
+### Session 19 — Matrix helpers + tracked tools + pull AND push modes (done)
 
 ```
 Read CLAUDE.md first.
@@ -319,7 +362,7 @@ Fix all errors before stopping.
 Apply code-reviewer skill to matrix.go and the reconciler. Report findings.
 ```
 
-### Session 20 — UI: tracked tools dashboard with mode badge + risk badges
+### S34 (was Session 20) — UI: tracked tools dashboard with mode badge + risk badges
 
 ```
 Read CLAUDE.md first.
@@ -392,7 +435,7 @@ Fix all errors before stopping.
 Apply code-reviewer skill to server.go and App.tsx. Report findings.
 ```
 
-### Session 21 — "Plan upgrade" creates a StackUpgrade from the UI
+### S35 (was Session 21) — "Plan upgrade" creates a StackUpgrade from the UI
 
 ```
 Read CLAUDE.md first.
@@ -457,7 +500,11 @@ Apply code-reviewer skill to server.go and App.tsx.
 Report CRITICAL and MAJOR findings.
 ```
 
-### Session 22 — Guard raw installs in the execution path
+### S29 (was Session 22) — Guard raw installs in the execution path
+
+Audit finding #1 changes the premise: "release not found" also happens for Helm-managed tools,
+because the reconciler never passes the real release name or namespace. S27 adds those to the
+StackUpgrade spec first; this guard then becomes one branch of the S29 execution router.
 
 ```
 Read CLAUDE.md first.
@@ -527,8 +574,7 @@ spec:
 
 ---
 
-## After session 22
+## Verification
 
-Full intended behavior: pull report always on; push opt-in and risk-capped; raw installs detected and clearly marked manual-only; the confusing "release not found" replaced with a clear NotHelmManaged terminal state. Later work: git repo scanner, GitHub PR generation, Helm chart for install, Docker image, knowledge base expansion (external-secrets, argo-cd, prometheus-stack, istio, vault), first v0.1.0 release.
-
-Verification after each session: `make build && make test && cd ui && npm run build`.
+After each session: `make verify`; also `make generate` when `api/` or RBAC markers changed and
+`make ui` when `ui/` changed. From S22 on, CI runs the same gate on every PR.
