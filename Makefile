@@ -1,6 +1,7 @@
 BINARY_OPERATOR := bin/operator
-KNOWLEDGE_DIR   := knowledge/tools
 UI_DIR          := ui
+# Operator image. config/default deploys ghcr.io/jeikeibnaa/kube-viltrumite:dev.
+IMG             ?= ghcr.io/jeikeibnaa/kube-viltrumite:dev
 
 # controller-gen runs pinned via `go run pkg@version` so it works the same on
 # Windows, Linux and CI without a GOPATH install and without touching go.mod.
@@ -9,10 +10,10 @@ CONTROLLER_GEN           := go run sigs.k8s.io/controller-tools/cmd/controller-g
 
 # The `vilt` kubectl plugin (cmd/cli) lands in v0.9.0; until then build is operator-only.
 
-.PHONY: help build ui test vet lint verify generate manifests install run clean
+.PHONY: help build ui test vet lint verify generate manifests install run docker-build deploy undeploy clean
 
 help: ## List available targets
-	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  %-10s %s\n", $$1, $$2}'
+	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  %-13s %s\n", $$1, $$2}'
 
 build: ## Build the operator binary into bin/
 	go build -o $(BINARY_OPERATOR) ./cmd/operator
@@ -43,8 +44,17 @@ manifests: ## Regenerate CRDs (config/crd/bases) and RBAC (config/rbac) from mar
 install: manifests ## Apply CRDs to the current kube-context
 	kubectl apply -f config/crd/bases/
 
-run: ## Run the operator locally against the current kube-context
-	go run ./cmd/operator --knowledge-base-path=$(KNOWLEDGE_DIR) --ui-path=$(UI_DIR)/dist
+run: ## Run the operator locally against the current kube-context (embedded knowledge base)
+	go run ./cmd/operator --ui-path=$(UI_DIR)/dist
+
+docker-build: ## Build the operator image (UI + binary) as $(IMG)
+	docker build -t $(IMG) .
+
+deploy: ## Install CRDs, RBAC and the operator into the current kube-context
+	kubectl apply -k config/default
+
+undeploy: ## Remove everything deploy created (including the CRDs and their objects)
+	kubectl delete -k config/default --ignore-not-found
 
 clean: ## Remove build output
 	rm -rf bin

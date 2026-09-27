@@ -1,0 +1,19 @@
+# Installs the operator: CRDs, RBAC and the controller Deployment.
+#   make docker-build && make deploy      (or: kubectl apply -k config/default)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: viltrumite-system
+# Keeps cluster-scoped names (ClusterRole, ClusterRoleBinding) from colliding
+# with other kubebuilder operators, which also generate "manager-role".
+namePrefix: viltrumite-
+
+resources:
+  - ../crd
+  - ../rbac
+  - ../manager
+
+images:
+  - name: controller
+    newName: ghcr.io/jeikeibnaa/kube-viltrumite
+    newTag: dev

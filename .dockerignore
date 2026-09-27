@@ -1,0 +1,16 @@
+# Allowlist: send only what the Dockerfile COPYs, so the build context stays
+# small and never carries .git, local binaries or editor/agent state.
+*
+!go.mod
+!go.sum
+!api/
+!cmd/
+!internal/
+!knowledge/
+!ui/
+
+# Rebuilt inside the image from package-lock.json.
+ui/node_modules/
+ui/dist/
+
+**/*_test.go
