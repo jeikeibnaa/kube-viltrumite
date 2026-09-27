@@ -91,7 +91,7 @@ func (e *HelmExecutor) Upgrade(ctx context.Context, step planner.UpgradeStep) (*
 	upgrade.Wait = true
 	upgrade.Timeout = 5 * time.Minute
 	upgrade.Atomic = true
-	upgrade.ChartPathOptions.Version = step.ToVersion
+	upgrade.Version = step.ToVersion // chart version (ChartPathOptions.Version)
 
 	settings := cli.New()
 	if e.kubeconfig != "" {

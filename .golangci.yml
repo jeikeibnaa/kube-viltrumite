@@ -1,0 +1,22 @@
+# golangci-lint v2. The version is pinned in two places that must match:
+# GOLANGCI_LINT_VERSION in the Makefile (`make lint`) and the lint job in
+# .github/workflows/ci.yml.
+version: "2"
+
+linters:
+  # errcheck, govet, ineffassign, staticcheck, unused.
+  default: standard
+  exclusions:
+    presets:
+      # Unchecked errors from Close, Flush, fmt.Print*, os.Setenv and the like.
+      - std-error-handling
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      # Keeps this module's imports in their own group, after third-party ones.
+      local-prefixes:
+        - github.com/jeikeibnaa/kube-viltrumite

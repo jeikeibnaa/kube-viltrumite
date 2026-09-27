@@ -18,7 +18,9 @@ func ollamaReply(t *testing.T, content string) http.HandlerFunc {
 			Message: ollamaMessage{Role: "assistant", Content: content},
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			t.Errorf("encode ollama reply: %v", err)
+		}
 	}
 }
 

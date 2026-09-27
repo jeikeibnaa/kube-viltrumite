@@ -53,7 +53,7 @@ func (r *StackUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		if err := r.Status().Update(ctx, &upgrade); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{Requeue: true}, nil //nolint:staticcheck // SA1019: S27 removes Requeue
 	}
 }
 
@@ -97,7 +97,7 @@ func (r *StackUpgradeReconciler) reconcilePending(ctx context.Context, upgrade *
 	if err := r.Status().Update(ctx, upgrade); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{Requeue: true}, nil
+	return ctrl.Result{Requeue: true}, nil //nolint:staticcheck // SA1019: S27 removes Requeue
 }
 
 func (r *StackUpgradeReconciler) reconcileApproved(ctx context.Context, upgrade *kubeviltrumitev1alpha1.StackUpgrade) (ctrl.Result, error) {

@@ -10,10 +10,11 @@ import (
 	"strings"
 	"time"
 
-	kubeviltrumitev1alpha1 "github.com/jeikeibnaa/kube-viltrumite/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+
+	kubeviltrumitev1alpha1 "github.com/jeikeibnaa/kube-viltrumite/api/v1alpha1"
 )
 
 // DefaultBindAddress keeps the UI on the pod's loopback interface. The server
@@ -59,7 +60,7 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("/", http.FileServer(http.Dir(s.uiPath)))
 	}
 
-	var h http.Handler = http.NewCrossOriginProtection().Handler(mux)
+	h := http.NewCrossOriginProtection().Handler(mux)
 	if isLoopback(s.addr) {
 		h = loopbackHostOnly(h)
 	}
