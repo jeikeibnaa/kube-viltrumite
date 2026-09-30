@@ -1,6 +1,6 @@
 # Kube-Viltrumite — project handoff context
 
-Read this at the start of every session (CLAUDE.md → Session Workflow). It captures the project's current state, the audit findings, the roadmap to v1.0.0, and carried-forward prompts. Last updated 2026-09-30 (S24).
+Read this at the start of every session (CLAUDE.md → Session Workflow). It captures the project's current state, the audit findings, the roadmap to v1.0.0, and carried-forward prompts. Last updated 2026-09-30 (S25).
 
 ---
 
@@ -49,6 +49,7 @@ The engineer only ever writes `CompatibilityPolicy`. `StackUpgrade` is created e
 - kubebuilder v4 layout, controller-runtime v0.23, k8s.io v0.35, helm.sh/helm/v3, React + Vite. Planned: go-git, go-github, Anthropic Go SDK.
 - controller-gen v0.21.0 and golangci-lint v2.14.0 run via `go run ...@version` from the Makefile (no tools.go, no GOPATH install). The golangci-lint version is also pinned in `.github/workflows/ci.yml`; keep the two in sync.
 - Knowledge base: YAML under `knowledge/tools/`, compiled into the binary via go:embed (`knowledge/embed.go`, `planner.Load(fs.FS)`). `--knowledge-base-path` optionally replaces it with a directory on disk. Schema v2 (S23; documented at the top of every file): canonical `tool` + `aliases` (the names scanners report), per version `app_version` (the compare key), `chart_version`, `source` (release notes). `Load` parses strictly and validates the whole KB, so the operator refuses to start on an invalid one. Versions compare as full semver with `github.com/Masterminds/semver/v3` (Helm's library); `Matrix.CanonicalName` maps an alias to its tool.
+- Tests: `make verify` runs the unit tests with a fake API server. The controller tests that need a real one (CRD defaults and validation, the status subresource, a full reconcile) are named `TestEnvtest*` and skip unless `KUBEBUILDER_ASSETS` is set; `make envtest` downloads etcd + kube-apiserver 1.35.0 with a pinned setup-envtest into `ENVTEST_BIN_DIR` and runs them, and CI runs it as its own job. On the Windows dev machine `ENVTEST_BIN_DIR` points at the D: cache (set in `env.sh`), and `suite_windows_test.go` stops envtest's processes, which envtest itself cannot there.
 - Install: `make docker-build && make deploy` (kustomize `config/default` → namespace `viltrumite-system`, image `ghcr.io/jeikeibnaa/kube-viltrumite:dev`). The UI binds `127.0.0.1:8082` (`--ui-bind-address`) and is reached with `kubectl -n viltrumite-system port-forward deploy/viltrumite-controller-manager 8082` until auth lands (S37).
 - Workflow with Claude Code: one roadmap session = one fresh Claude Code session = one branch (`session/<N>-<topic>`) = one PR; always name exact files to touch; `make verify` before every commit. Full steps in CLAUDE.md.
 - Devlog: `docs/devlog/DEVLOG-YYYY-MM-DD-S<N>.md`, one file per session, English + Mongolian, with `docs/devlog/README.md` as the index.
@@ -58,7 +59,7 @@ The engineer only ever writes `CompatibilityPolicy`. `StackUpgrade` is created e
 
 ---
 
-## Current state (as of 2026-09-30, after S24)
+## Current state (as of 2026-09-30, after S25)
 
 Done — `go vet` and all unit tests green:
 
@@ -77,6 +78,7 @@ Done — `go vet` and all unit tests green:
 - Session 22: GitHub Actions CI (`.github/workflows/ci.yml`: `make verify` + clean tree after `make generate`, golangci-lint v2.14.0 + shellcheck, `make ui`, image build without push, kind e2e), all green on PR jeikeibnaa/kube-viltrumite#3; `make e2e` (`hack/e2e.sh`): kind → image → `kind load` → `make deploy` → sample policy reaches `status.mode=discovery`, the Lease is held by the pod, no `forbidden`/`read-only file system` in the log, `/api/health` and `/` answer through port-forward. Passes in CI (Kubernetes v1.37.0) and locally (v1.32.2). Minimal `.golangci.yml` and its 11 findings fixed; README "Install in a cluster". v0.1.0 exit criteria met; the tag waits for the owner.
 - Session 23: knowledge base schema v2. Canonical `tool` + `aliases` (`kube-prometheus-stack` → `prometheus-stack`, `istiod`/`base` → `istio`, `argocd` → `argo-cd`); every version entry has `app_version`, `chart_version` (real mappings read from the upstream chart indexes and `Chart.yaml` files) and a release-notes `source` (31 URLs, all HTTP 200). `CompareMinor` replaced by `CompareVersions` (Masterminds/semver/v3, now a direct dependency); `Resolve` picks the exact entry or the latest one below the target on its minor line; `LatestSafeVersion` sees patch entries (external-secrets 0.10.0 → 0.10.5). `Load` decodes strictly and validates everything (required fields, enums, ascending unique versions, http(s) sources, unique names/aliases, known `incompatible_with` keys), reporting all problems at once. `ingress-nginx` (not in the KB) moved from `incompatible_with` into `upgrade_notes`. Until S24, Helm/Flux/Argo scanners still report chart versions, so vault and prometheus-stack compare chart against app versions: tag v0.1.0 at `7362ba4`, not a later `main`.
 - Session 24: scanners report canonical names and app versions. Flux `HelmRelease` via `helm.toolkit.fluxcd.io/v2` (fallback v2beta2, v2beta1), named by chart, versions/release/namespace from the deployed `status.history` entry, listed cluster-wide and kept when it installs into or lives in a watched namespace; a Flux-managed Helm release is reported once, as `fluxcd`. Helm reports `Chart.Metadata.AppVersion` and chart home/sources (lister injectable for tests). Argo CD: multi-source, `status.sync.revision(s)`, `status.summary.images`, destination namespace. Raw: StatefulSets, repository-suffix `image` rules (KB field renamed from `image_contains`), tag suffix cleaning, detection for all six tools. The controller's `resolveInstalled` maps each find to a KB tool (`Matrix.IdentifyChart`; istio's `base` counts only with Istio's origin via the new `alias_origins`), fills the app version from the source, a known image or the exact KB `chart_version`, and keeps one record per tool (GitOps > Helm > raw). `trackedTools` accept aliases; an unknown or unparsable installed version is reported as such. Checked on kind with raw cert-manager, Helm vault and a Flux v2 external-secrets release. v0.1.0 is tagged at `7362ba4`.
+- Session 25: CompatibilityPolicy reconciler tests (audit #13). Fake client with the status subresource over the real scanners (Flux/Argo CD objects, workloads, an injected Helm lister) and the embedded KB: discovery and focused mode, aliases, duplicates, `untrackableTools`, `unknownInstalled`, every status message, `riskTolerance` (unset = HIGH), autoplan (off, `maxRisk` gate with unset = LOW, `autoApprove`, idempotence), `RequeueAfter`, a deleted policy, a failed raw scan. envtest (kube-apiserver 1.35.0, `make envtest`, CI job) for CRD validation and defaults, the status subresource of both CRDs and a full reconcile. Bugs the tests exposed, fixed: `riskTolerance` had no enum (a typo such as `medium` was read as LOW), `spec.ai` was a value struct (Go clients could not create a policy without it), repeated untrackable names were listed twice. Controller tests: 19 / 45 subtests; kind e2e passes. The reconcile tests expect the current KB's versions (`1.15.0`, `0.10.5`, …): data changes in S26 update them.
 
 Numbering note: the old plan's sessions 20–22 (dashboard, Plan upgrade, raw-install guard) are now S34, S35 and S29 in the v1.0 roadmap. Their detailed prompts are kept at the bottom of this file.
 
@@ -104,7 +106,7 @@ History note: an unrelated scratch file (`docs/devlog/test`) and the 97MB `opera
 | 14 | Generated `config/rbac/role.yaml` lacks markers for what the operator really touches: Flux `helmreleases`, Argo `applications`, Helm release `secrets`, `coordination.k8s.io` leases and `events`. Deployed as-is, the scanners get "forbidden". | S21 ✅, S22 ✅ (no "forbidden" in the kind smoke test) |
 | 15 | The Helm SDK secret driver needs cluster-wide `secrets` get/list, so the operator can read every Secret; RBAC cannot filter by the `owner=helm` label. | S45 (e.g. per-`watchNamespaces` Roles) |
 | 12 | KB data stale (cert-manager ≤1.15, Argo CD ≤2.12, Istio ≤1.22) and unsourced. | S26 |
-| 13 | No tests for the CompatibilityPolicy reconciler. | S25 |
+| 13 | No tests for the CompatibilityPolicy reconciler. | S25 ✅ (fake client + envtest; three bugs found and fixed) |
 
 ---
 
@@ -582,8 +584,8 @@ spec:
 
 ## Verification
 
-After each session: `make verify`; also `make generate` when `api/` or RBAC markers changed and
-`make ui` when `ui/` changed. CI (`.github/workflows/ci.yml`) runs these gates plus golangci-lint,
+After each session: `make verify`; also `make generate` when `api/` or RBAC markers changed,
+`make envtest` when the controllers or the CRDs changed, and `make ui` when `ui/` changed. CI (`.github/workflows/ci.yml`) runs these gates plus golangci-lint,
 the image build and the kind smoke test on every PR; `make lint` and `make e2e` (Docker, kind,
 kubectl, curl) run them locally. On this Windows checkout (`core.autocrlf=true`) `make generate`
 shows generated files as modified by line endings only; check with `git diff --ignore-cr-at-eol`.
