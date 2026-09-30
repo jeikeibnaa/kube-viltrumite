@@ -120,6 +120,7 @@ Prerequisites: Go 1.26+, Node.js 20+, `make`, `kubectl`, and a cluster to point 
 ```bash
 make help        # list targets
 make verify      # go vet + unit tests + build (run before every commit)
+make envtest     # controller tests against a real API server (downloads etcd + kube-apiserver once)
 make lint        # golangci-lint, pinned to the version CI uses
 make generate    # regenerate deepcopy, CRDs and RBAC after changing api/ or RBAC markers
 make install     # apply CRDs to the current kube-context

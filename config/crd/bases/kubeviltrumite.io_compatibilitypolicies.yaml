@@ -54,7 +54,7 @@ spec:
             description: CompatibilityPolicySpec defines the desired state of CompatibilityPolicy.
             properties:
               ai:
-                description: AIProviderConfig configures the AI backend used for analysis.
+                description: AI configures the AI backend used for analysis.
                 properties:
                   endpoint:
                     type: string
@@ -148,6 +148,14 @@ spec:
                 - url
                 type: object
               riskTolerance:
+                description: |-
+                  RiskTolerance is the highest risk of an upgrade the report recommends.
+                  Unset means HIGH.
+                enum:
+                - LOW
+                - MEDIUM
+                - HIGH
+                - BLOCKING
                 type: string
               scanInterval:
                 type: string
