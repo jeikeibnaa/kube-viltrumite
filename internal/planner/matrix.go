@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"path"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -56,12 +57,20 @@ type VersionEntry struct {
 }
 
 // DeploymentMatchSpec holds workload-matching criteria parsed from a knowledge-base file.
+// A workload (Deployment, StatefulSet or DaemonSet) matches when its name is
+// Name or one of its containers runs Image.
 type DeploymentMatchSpec struct {
 	Name          string `yaml:"name"`
 	NamespaceHint string `yaml:"namespace_hint"`
-	Container     string `yaml:"container"`
-	ImageContains string `yaml:"image_contains"`
-	VersionFrom   string `yaml:"version_from"`
+	// Container names the container to read the version from when the
+	// workload matched by name but runs no container with Image.
+	Container string `yaml:"container"`
+	// Image is an image repository, matched as a whole path suffix:
+	// "jetstack/cert-manager-controller" matches
+	// quay.io/jetstack/cert-manager-controller but not a longer repository
+	// such as jetstack/cert-manager-controller-extra.
+	Image       string `yaml:"image"`
+	VersionFrom string `yaml:"version_from"`
 }
 
 // DetectionSpec holds the workload-detection metadata for a tool.
@@ -76,9 +85,13 @@ type ToolCompatibility struct {
 	Tool string `yaml:"tool"`
 	// Aliases are other names scanners report for the tool, such as Helm chart
 	// names (kube-prometheus-stack for prometheus-stack).
-	Aliases   []string       `yaml:"aliases"`
-	Detection DetectionSpec  `yaml:"detection"`
-	Versions  []VersionEntry `yaml:"versions"`
+	Aliases []string `yaml:"aliases"`
+	// AliasOrigins lists, for an alias too generic to trust on its own (such
+	// as istio's chart "base"), the words one of which the chart's origin
+	// must contain for the alias to count. See IdentifyChart.
+	AliasOrigins map[string][]string `yaml:"alias_origins"`
+	Detection    DetectionSpec       `yaml:"detection"`
+	Versions     []VersionEntry      `yaml:"versions"`
 }
 
 // CompatibilityEntry is the value returned by Resolve. It combines the target
@@ -127,6 +140,12 @@ var breakingChangeTypes = map[string]bool{
 // DNS label, like the Helm chart and Kubernetes object names scanners report.
 var toolNamePattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
+// versionSources is the set of allowed DeploymentMatchSpec.VersionFrom values.
+var versionSources = map[string]bool{
+	"image_tag": true,
+	"label":     true,
+}
+
 // RiskAtOrBelow reports whether risk is at or below ceiling in the ordering
 // LOW < MEDIUM < HIGH < BLOCKING.
 func RiskAtOrBelow(risk, ceiling ai.RiskLevel) bool {
@@ -141,9 +160,11 @@ func RiskAtOrBelow(risk, ceiling ai.RiskLevel) bool {
 // Load rejects a knowledge base that breaks the schema described at the top
 // of every knowledge/tools file: unknown fields, missing required fields, a
 // risk_level or breaking-change type outside its enum, versions that do not
-// parse or are not ascending and unique, a tool name or alias declared twice,
-// and incompatible_with keys that name no known tool or alias. It reports
-// every problem it finds, not just the first.
+// parse or are not ascending and unique, a detection rule with neither name
+// nor image or an unknown version_from, alias_origins for a name that is not
+// an alias, a tool name or alias declared twice, and incompatible_with keys
+// that name no known tool or alias. It reports every problem it finds, not
+// just the first.
 func Load(fsys fs.FS) (*Matrix, error) {
 	entries, err := fs.ReadDir(fsys, ".")
 	if err != nil {
@@ -228,6 +249,23 @@ func validateTool(tc *ToolCompatibility) []error {
 	for _, a := range tc.Aliases {
 		if !toolNamePattern.MatchString(a) {
 			fail("alias %q must be lowercase letters, digits and '-'", a)
+		}
+	}
+	for _, alias := range sortedKeys(tc.AliasOrigins) {
+		if !slices.Contains(tc.Aliases, alias) {
+			fail("alias_origins: %q is not one of this tool's aliases", alias)
+		}
+		words := tc.AliasOrigins[alias]
+		if len(words) == 0 || slices.Contains(words, "") {
+			fail("alias_origins[%s]: needs one or more non-empty words", alias)
+		}
+	}
+	for i, d := range tc.Detection.Deployments {
+		if d.Name == "" && d.Image == "" {
+			fail("detection.deployments[%d]: needs a name or an image", i)
+		}
+		if !versionSources[d.VersionFrom] {
+			fail("detection.deployments[%d]: version_from %q is not one of image_tag, label", i, d.VersionFrom)
 		}
 	}
 	if len(tc.Versions) == 0 {
@@ -362,6 +400,63 @@ func (m *Matrix) checkReferences() []error {
 func (m *Matrix) CanonicalName(name string) (string, bool) {
 	canonical, ok := m.names[name]
 	return canonical, ok
+}
+
+// IdentifyChart maps a Helm chart name a scanner reported to its tool, like
+// CanonicalName, but an alias the tool lists under alias_origins counts only
+// when one of origins (the chart's home and sources, an Argo CD repoURL, a
+// Flux source name) contains one of the alias's words, ignoring case. So
+// istio's generic chart name "base" is istio only when the chart comes from
+// Istio; without that evidence ok is false.
+func (m *Matrix) IdentifyChart(chart string, origins []string) (string, bool) {
+	tc, ok := m.tool(chart)
+	if !ok {
+		return "", false
+	}
+	words, restricted := tc.AliasOrigins[chart]
+	if !restricted {
+		return tc.Tool, true
+	}
+	for _, origin := range origins {
+		origin = strings.ToLower(origin)
+		for _, w := range words {
+			if strings.Contains(origin, strings.ToLower(w)) {
+				return tc.Tool, true
+			}
+		}
+	}
+	return "", false
+}
+
+// AppVersionForChart returns the app version the knowledge base records for
+// an exact chart version of tool (a name or alias), for sources that report
+// only the chart version. Versions compare by semver, so "v1.14.0" matches
+// "1.14.0"; a chart version between two entries is not guessed at.
+func (m *Matrix) AppVersionForChart(tool, chartVersion string) (string, bool) {
+	tc, ok := m.tool(tool)
+	if !ok {
+		return "", false
+	}
+	want, err := parseVersion(chartVersion)
+	if err != nil {
+		return "", false
+	}
+	for _, v := range tc.Versions {
+		if v.ChartVersion == "" {
+			continue
+		}
+		if got, err := parseVersion(v.ChartVersion); err == nil && got.Equal(want) {
+			return v.AppVersion, true
+		}
+	}
+	return "", false
+}
+
+// ValidVersion reports whether s parses as a version the matrix can compare
+// (see CompareVersions).
+func ValidVersion(s string) bool {
+	_, err := parseVersion(s)
+	return err == nil
 }
 
 // tool returns the compatibility document for a tool name or alias.

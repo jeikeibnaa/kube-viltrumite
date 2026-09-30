@@ -133,7 +133,7 @@ func main() {
 				Name:          d.Name,
 				NamespaceHint: d.NamespaceHint,
 				Container:     d.Container,
-				ImageContains: d.ImageContains,
+				Image:         d.Image,
 				VersionFrom:   d.VersionFrom,
 			})
 		}

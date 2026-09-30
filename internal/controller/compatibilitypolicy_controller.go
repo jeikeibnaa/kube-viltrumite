@@ -35,7 +35,7 @@ type CompatibilityPolicyReconciler struct {
 //+kubebuilder:rbac:groups=kubeviltrumite.io,resources=compatibilitypolicies/status,verbs=update;patch
 //+kubebuilder:rbac:groups=kubeviltrumite.io,resources=stackupgrades,verbs=get;list;create
 //+kubebuilder:rbac:groups=kubeviltrumite.io,resources=stackupgrades/status,verbs=update;patch
-//+kubebuilder:rbac:groups=apps,resources=deployments;daemonsets,verbs=list;watch
+//+kubebuilder:rbac:groups=apps,resources=deployments;statefulsets;daemonsets,verbs=list;watch
 
 // Scanner reads. Flux HelmReleases and Argo CD Applications go through the
 // unstructured client; plain Helm releases are stored as Secrets, which the
@@ -59,10 +59,6 @@ func (r *CompatibilityPolicyReconciler) Reconcile(ctx context.Context, req ctrl.
 
 	// Step 1: determine tool list and operating mode.
 	known := r.Matrix.ListTools()
-	knownSet := make(map[string]bool, len(known))
-	for _, n := range known {
-		knownSet[n] = true
-	}
 
 	var toEval []string
 	status := kubeviltrumitev1alpha1.CompatibilityPolicyStatus{}
@@ -72,47 +68,36 @@ func (r *CompatibilityPolicyReconciler) Reconcile(ctx context.Context, req ctrl.
 		toEval = known
 	} else {
 		status.Mode = "focused"
+		// A tracked name may be an alias ("argocd", "kube-prometheus-stack").
+		evaluated := make(map[string]bool)
 		for _, n := range policy.Spec.TrackedTools {
-			if knownSet[n] {
-				toEval = append(toEval, n)
-			} else {
+			canonical, ok := r.Matrix.CanonicalName(n)
+			switch {
+			case !ok:
 				status.UntrackableTools = append(status.UntrackableTools, n)
+			case !evaluated[canonical]:
+				evaluated[canonical] = true
+				toEval = append(toEval, canonical)
 			}
 		}
 	}
 
-	// Step 2: scan once, build installed map keyed by tool name.
-	clusterTools, err := r.Scanner.ScanAll(ctx, policy.Spec.WatchNamespaces)
+	// Step 2: scan once, then map every find to a knowledge-base tool.
+	found, err := r.Scanner.ScanAll(ctx, policy.Spec.WatchNamespaces)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("cluster scan: %w", err)
 	}
-
-	// Raw results are added first; helm/flux/argocd results overwrite them
-	// because those sources are upgradeable via package manager.
-	installed := make(map[string]scanner.InstalledTool)
-
 	if r.WorkloadScanner != nil {
 		rawTools, rawErr := r.WorkloadScanner.ScanWorkloads(ctx, policy.Spec.WatchNamespaces, r.Detections)
 		if rawErr != nil {
 			logger.Error(rawErr, "workload scan failed, continuing without raw results")
 		} else {
-			for _, t := range rawTools {
-				installed[t.Name] = t
-			}
+			found = append(found, rawTools...)
 		}
 	}
-
-	for _, t := range clusterTools {
-		installed[t.Name] = t
-	}
-
-	// Collect tools installed in the cluster that have no KB entry (blind-spot signal).
-	for name := range installed {
-		if !knownSet[name] {
-			status.UnknownInstalled = append(status.UnknownInstalled, name)
-		}
-	}
-	sort.Strings(status.UnknownInstalled)
+	installed, unknown := resolveInstalled(r.Matrix, r.Detections, found)
+	// Installed charts with no knowledge-base entry (blind-spot signal).
+	status.UnknownInstalled = unknown
 
 	// Default RiskTolerance to HIGH when unset to avoid silently hiding all upgrades.
 	tolerance := policy.Spec.RiskTolerance
@@ -129,14 +114,22 @@ func (r *CompatibilityPolicyReconciler) Reconcile(ctx context.Context, req ctrl.
 			ts.Source = t.Source
 			ts.Namespace = t.Namespace
 
-			rec, risk, found := r.Matrix.LatestSafeVersion(toolName, t.CurrentVersion, tolerance)
-			if found {
-				ts.UpgradeAvailable = true
-				ts.RecommendedVersion = rec
-				ts.Risk = risk
-				ts.Message = "upgrade available"
-			} else {
-				ts.Message = "up to date"
+			switch {
+			case t.CurrentVersion == "":
+				// Nothing to compare, so no claim that the tool is up to date.
+				ts.Message = "installed version unknown"
+			case !planner.ValidVersion(t.CurrentVersion):
+				ts.Message = fmt.Sprintf("installed version %q not recognised", t.CurrentVersion)
+			default:
+				rec, risk, found := r.Matrix.LatestSafeVersion(toolName, t.CurrentVersion, tolerance)
+				if found {
+					ts.UpgradeAvailable = true
+					ts.RecommendedVersion = rec
+					ts.Risk = risk
+					ts.Message = "upgrade available"
+				} else {
+					ts.Message = "up to date"
+				}
 			}
 		} else {
 			ts.Message = "not currently installed in cluster"
@@ -216,6 +209,81 @@ func (r *CompatibilityPolicyReconciler) requeue(policy *kubeviltrumitev1alpha1.C
 		interval = 5 * time.Minute
 	}
 	return ctrl.Result{RequeueAfter: interval}
+}
+
+// sourceRank orders how a tool is managed. A GitOps controller owns the
+// releases it manages, plain Helm comes next and a raw install last, so the
+// report names the source an upgrade has to go through.
+var sourceRank = map[string]int{"fluxcd": 3, "argocd": 3, "helm": 2, "raw": 1}
+
+// resolveInstalled maps each scanned find to its knowledge-base tool and
+// keeps one record per tool: the best-ranked source and, between equals, one
+// with a version the matrix can compare. It returns the records keyed by tool
+// and, sorted, the names of finds that matched no tool.
+func resolveInstalled(m *planner.Matrix, detections []scanner.ToolDetection, found []scanner.InstalledTool) (map[string]scanner.InstalledTool, []string) {
+	byTool := make(map[string]scanner.ToolDetection, len(detections))
+	for _, d := range detections {
+		byTool[d.ToolName] = d
+	}
+
+	installed := make(map[string]scanner.InstalledTool)
+	unknown := make(map[string]bool)
+	for _, t := range found {
+		name, ok := identify(m, t)
+		if !ok {
+			unknown[t.Name] = true
+			continue
+		}
+		t.Name = name
+		t.CurrentVersion = appVersion(m, byTool[name], t)
+		if prev, seen := installed[name]; !seen || preferred(t, prev) {
+			installed[name] = t
+		}
+	}
+
+	names := make([]string, 0, len(unknown))
+	for n := range unknown {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return installed, names
+}
+
+// identify returns the knowledge-base tool a find is. A raw find is already
+// named by its detection rule; the others report a chart name.
+func identify(m *planner.Matrix, t scanner.InstalledTool) (string, bool) {
+	if t.Source == "raw" {
+		return m.CanonicalName(t.Name)
+	}
+	chart := t.ChartName
+	if chart == "" {
+		chart = t.Name
+	}
+	return m.IdentifyChart(chart, t.ChartOrigins)
+}
+
+// appVersion returns a find's app version: what its source reported, else the
+// version of a known image it runs (Argo CD reports these), else the app
+// version the knowledge base records for its exact chart version.
+func appVersion(m *planner.Matrix, det scanner.ToolDetection, t scanner.InstalledTool) string {
+	if t.CurrentVersion != "" {
+		return t.CurrentVersion
+	}
+	if v := scanner.VersionFromImages(t.Images, det); v != "" {
+		return v
+	}
+	if v, ok := m.AppVersionForChart(t.Name, t.ChartVersion); ok {
+		return v
+	}
+	return ""
+}
+
+// preferred reports whether find a should replace b as the record of a tool.
+func preferred(a, b scanner.InstalledTool) bool {
+	if sourceRank[a.Source] != sourceRank[b.Source] {
+		return sourceRank[a.Source] > sourceRank[b.Source]
+	}
+	return planner.ValidVersion(a.CurrentVersion) && !planner.ValidVersion(b.CurrentVersion)
 }
 
 // SetupWithManager sets up the controller with the Manager.
