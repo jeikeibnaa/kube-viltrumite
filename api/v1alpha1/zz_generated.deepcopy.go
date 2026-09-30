@@ -130,7 +130,11 @@ func (in *CompatibilityPolicySpec) DeepCopyInto(out *CompatibilityPolicySpec) {
 	}
 	out.AutoApprove = in.AutoApprove
 	out.ScanInterval = in.ScanInterval
-	in.AI.DeepCopyInto(&out.AI)
+	if in.AI != nil {
+		in, out := &in.AI, &out.AI
+		*out = new(AIProviderConfig)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.GitRepo != nil {
 		in, out := &in.GitRepo, &out.GitRepo
 		*out = new(GitRepoRef)

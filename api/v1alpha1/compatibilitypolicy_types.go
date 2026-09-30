@@ -48,12 +48,18 @@ type AIProviderConfig struct {
 
 // CompatibilityPolicySpec defines the desired state of CompatibilityPolicy.
 type CompatibilityPolicySpec struct {
-	WatchNamespaces []string          `json:"watchNamespaces,omitempty"`
-	RiskTolerance   ai.RiskLevel      `json:"riskTolerance,omitempty"`
-	AutoApprove     AutoApproveConfig `json:"autoApprove,omitempty"`
-	ScanInterval    metav1.Duration   `json:"scanInterval,omitempty"`
-	AI              AIProviderConfig  `json:"ai,omitempty"`
-	GitRepo         *GitRepoRef       `json:"gitRepo,omitempty"`
+	WatchNamespaces []string `json:"watchNamespaces,omitempty"`
+	// RiskTolerance is the highest risk of an upgrade the report recommends.
+	// Unset means HIGH.
+	// +kubebuilder:validation:Enum=LOW;MEDIUM;HIGH;BLOCKING
+	// +optional
+	RiskTolerance ai.RiskLevel      `json:"riskTolerance,omitempty"`
+	AutoApprove   AutoApproveConfig `json:"autoApprove,omitempty"`
+	ScanInterval  metav1.Duration   `json:"scanInterval,omitempty"`
+	// AI configures the AI backend used for analysis.
+	// +optional
+	AI      *AIProviderConfig `json:"ai,omitempty"`
+	GitRepo *GitRepoRef       `json:"gitRepo,omitempty"`
 	// TrackedTools restricts scanning to the listed tool names.
 	// Empty means discovery mode: track all known tools.
 	// +optional
