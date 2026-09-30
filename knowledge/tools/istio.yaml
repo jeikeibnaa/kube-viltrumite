@@ -4,8 +4,16 @@
 #   tool: string                 — canonical tool name (lowercase letters, digits, '-'); file is <tool>.yaml
 #   aliases: [string]            — optional; other names scanners report for this tool, such as
 #                                  Helm chart names. A name belongs to one tool only.
+#   alias_origins:               — optional; for an alias too generic to trust alone: words, one of
+#     <alias>: [string]            which the chart's origin (Helm home/sources, Argo CD repoURL, Flux
+#                                  source name) must contain for the alias to count
 #   detection:                   — optional; how to find a raw `kubectl apply` install
-#     deployments[]: name, namespace_hint, container, image_contains, version_from
+#     deployments[]:             — a Deployment, StatefulSet or DaemonSet matches by name or image
+#       name: string             — workload name
+#       image: string            — image repository, matched as a whole path suffix ("istio/pilot")
+#       container: string        — container to read the version from after a name-only match
+#       namespace_hint: string   — namespace the tool usually runs in (informational)
+#       version_from: string     — image_tag | label (app.kubernetes.io/version)
 #     labels: {string: string}
 #   versions[]:                  — ascending by app_version, no duplicates
 #     app_version: string        — upstream app version, full semver without "v" ("1.14.0").
@@ -22,12 +30,23 @@
 #     upgrade_notes: string      — operator guidance for the upgrade from the previous entry
 #
 # Istio's Helm charts (base, istiod, gateway) share the app version. "base" is a generic chart
-# name: a scanner should confirm the chart comes from Istio before mapping it to this tool.
+# name, so alias_origins makes it count only for a chart that comes from Istio; istiod alone
+# already identifies an install.
 
 tool: istio
 aliases:
   - istiod
   - base
+alias_origins:
+  base: [istio]
+
+detection:
+  deployments:
+    - name: istiod
+      namespace_hint: istio-system
+      container: discovery
+      image: istio/pilot
+      version_from: image_tag
 
 versions:
   - app_version: "1.18.0"

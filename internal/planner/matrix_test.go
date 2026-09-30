@@ -237,6 +237,31 @@ func TestLoad_Validation(t *testing.T) {
 			wantErr: `tool "b": name already used by tool "a"`,
 		},
 		{
+			name:    "alias_origins for a name that is not an alias",
+			fsys:    fstest.MapFS{"a.yaml": {Data: doc("a", "aliases: [a-chart]\nalias_origins: {other: [a]}\n", entry(nil))}},
+			wantErr: `alias_origins: "other" is not one of this tool's aliases`,
+		},
+		{
+			name:    "alias_origins without words",
+			fsys:    fstest.MapFS{"a.yaml": {Data: doc("a", "aliases: [a-chart]\nalias_origins: {a-chart: []}\n", entry(nil))}},
+			wantErr: "alias_origins[a-chart]: needs one or more non-empty words",
+		},
+		{
+			name:    "detection rule without name or image",
+			fsys:    fstest.MapFS{"a.yaml": {Data: doc("a", "detection: {deployments: [{version_from: image_tag}]}\n", entry(nil))}},
+			wantErr: "detection.deployments[0]: needs a name or an image",
+		},
+		{
+			name:    "detection version_from outside the enum",
+			fsys:    fstest.MapFS{"a.yaml": {Data: doc("a", "detection: {deployments: [{image: a/a, version_from: annotation}]}\n", entry(nil))}},
+			wantErr: `detection.deployments[0]: version_from "annotation"`,
+		},
+		{
+			name:    "schema v2 image_contains detection key",
+			fsys:    fstest.MapFS{"a.yaml": {Data: doc("a", "detection: {deployments: [{image_contains: a, version_from: image_tag}]}\n", entry(nil))}},
+			wantErr: "field image_contains not found",
+		},
+		{
 			name: "alias declared by two tools",
 			fsys: fstest.MapFS{
 				"a.yaml": {Data: doc("a", "aliases: [shared]\n", entry(nil))},
@@ -443,15 +468,99 @@ func TestCanonicalName(t *testing.T) {
 	}
 }
 
+// TestDetections checks that every shipped tool can be found as a raw
+// install, by the image its main workload runs.
 func TestDetections(t *testing.T) {
 	m := loadEmbedded(t)
 
-	d, ok := m.Detections()["cert-manager"]
-	if !ok || len(d.Deployments) == 0 {
-		t.Fatalf("cert-manager detection missing: %+v", d)
+	want := map[string]string{
+		"argo-cd":          "argoproj/argocd",
+		"cert-manager":     "jetstack/cert-manager-controller",
+		"external-secrets": "external-secrets/external-secrets",
+		"istio":            "istio/pilot",
+		"prometheus-stack": "prometheus-operator/prometheus-operator",
+		"vault":            "hashicorp/vault",
 	}
-	if got := d.Deployments[0].ImageContains; got != "cert-manager-controller" {
-		t.Errorf("ImageContains = %q, want cert-manager-controller", got)
+	detections := m.Detections()
+	if len(detections) != len(want) {
+		t.Errorf("Detections() has %d tools, want %d", len(detections), len(want))
+	}
+	for tool, image := range want {
+		d := detections[tool]
+		if len(d.Deployments) == 0 {
+			t.Errorf("%s: no detection rule", tool)
+			continue
+		}
+		if got := d.Deployments[0].Image; got != image {
+			t.Errorf("%s: first rule's image = %q, want %q", tool, got, image)
+		}
+	}
+}
+
+func TestIdentifyChart(t *testing.T) {
+	m := loadEmbedded(t)
+
+	tests := []struct {
+		name    string
+		chart   string
+		origins []string
+		want    string
+		wantOK  bool
+	}{
+		{name: "canonical chart name", chart: "cert-manager", want: "cert-manager", wantOK: true},
+		{name: "plain alias", chart: "kube-prometheus-stack", want: "prometheus-stack", wantOK: true},
+		{name: "istiod needs no origin", chart: "istiod", want: "istio", wantOK: true},
+		{name: "base from Istio's chart home", chart: "base", origins: []string{"https://istio.io"}, want: "istio", wantOK: true},
+		{
+			name: "base from Istio's chart repository, any case", chart: "base",
+			origins: []string{"https://ISTIO-release.storage.googleapis.com/charts"}, want: "istio", wantOK: true,
+		},
+		{name: "base without origin", chart: "base"},
+		{name: "base from another project", chart: "base", origins: []string{"https://charts.example.com", "https://github.com/example/base"}},
+		{name: "unknown chart", chart: "ingress-nginx", origins: []string{"https://istio.io"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := m.IdentifyChart(tc.chart, tc.origins)
+			if got != tc.want || ok != tc.wantOK {
+				t.Errorf("IdentifyChart(%q, %v) = (%q, %v), want (%q, %v)", tc.chart, tc.origins, got, ok, tc.want, tc.wantOK)
+			}
+		})
+	}
+}
+
+func TestAppVersionForChart(t *testing.T) {
+	m := loadEmbedded(t)
+
+	tests := []struct {
+		name   string
+		tool   string
+		chart  string
+		want   string
+		wantOK bool
+	}{
+		{name: "argo-cd chart", tool: "argo-cd", chart: "5.43.0", want: "2.8.0", wantOK: true},
+		{name: "alias and v prefix", tool: "kube-prometheus-stack", chart: "v58.0.0", want: "0.73.0", wantOK: true},
+		{name: "chart published as v1.14.0", tool: "cert-manager", chart: "1.14.0", want: "1.14.0", wantOK: true},
+		{name: "chart between entries is not guessed", tool: "argo-cd", chart: "5.46.8"},
+		{name: "unparsable chart version", tool: "vault", chart: "latest"},
+		{name: "unknown tool", tool: "velero", chart: "1.0.0"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := m.AppVersionForChart(tc.tool, tc.chart)
+			if got != tc.want || ok != tc.wantOK {
+				t.Errorf("AppVersionForChart(%q, %q) = (%q, %v), want (%q, %v)", tc.tool, tc.chart, got, ok, tc.want, tc.wantOK)
+			}
+		})
+	}
+}
+
+func TestValidVersion(t *testing.T) {
+	for v, want := range map[string]bool{"v1.14.0": true, "1.14": true, "0.9.5-rc.1": true, "latest": false, "": false} {
+		if got := ValidVersion(v); got != want {
+			t.Errorf("ValidVersion(%q) = %v, want %v", v, got, want)
+		}
 	}
 }
 

@@ -23,6 +23,7 @@ rules:
   resources:
   - daemonsets
   - deployments
+  - statefulsets
   verbs:
   - list
   - watch
