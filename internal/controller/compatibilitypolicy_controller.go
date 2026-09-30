@@ -69,13 +69,16 @@ func (r *CompatibilityPolicyReconciler) Reconcile(ctx context.Context, req ctrl.
 	} else {
 		status.Mode = "focused"
 		// A tracked name may be an alias ("argocd", "kube-prometheus-stack").
+		// Each tool, and each name without one, is listed once.
 		evaluated := make(map[string]bool)
+		untrackable := make(map[string]bool)
 		for _, n := range policy.Spec.TrackedTools {
 			canonical, ok := r.Matrix.CanonicalName(n)
 			switch {
-			case !ok:
+			case !ok && !untrackable[n]:
+				untrackable[n] = true
 				status.UntrackableTools = append(status.UntrackableTools, n)
-			case !evaluated[canonical]:
+			case ok && !evaluated[canonical]:
 				evaluated[canonical] = true
 				toEval = append(toEval, canonical)
 			}
