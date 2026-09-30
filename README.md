@@ -57,8 +57,8 @@ metadata:
   name: platform-stack
   namespace: viltrumite-system
 spec:
-  watchNamespaces: [cert-manager, vault, argocd]
-  trackedTools: []        # empty = discovery mode (track every known tool)
+  watchNamespaces: [cert-manager, vault, argocd]  # where tools run; Flux/Argo CD objects are found wherever they live
+  trackedTools: []        # empty = discovery mode; names or chart aliases such as kube-prometheus-stack
   riskTolerance: MEDIUM   # hide upgrades riskier than this
   scanInterval: 5m
   autoplan:
@@ -72,7 +72,7 @@ spec:
 | Area | State |
 |---|---|
 | CRDs, reconcilers, pull + push model | ✅ Working |
-| Detection: Helm, Flux `HelmRelease`, Argo CD `Application`, raw `kubectl apply` installs | 🟡 Working, accuracy fixes in v0.2.0 |
+| Detection: Helm, Flux `HelmRelease` (v2), Argo CD `Application` (multi-source), raw `kubectl apply` installs | ✅ Working: canonical tool names and app versions, one record per tool (GitOps over Helm over raw) |
 | Compatibility knowledge base (6 tools) | 🟡 Schema v2 (app/chart versions, aliases, release-notes links, validated on load); data verified and refreshed in v0.2.0 |
 | Upgrade execution (Helm SDK, atomic rollback) | 🔴 Experimental, reworked in v0.3.0 |
 | Cross-tool ordering and multi-step plans | 🔴 Planned for v0.4.0 |
