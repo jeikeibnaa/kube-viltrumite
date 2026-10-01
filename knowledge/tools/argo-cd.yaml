@@ -1,4 +1,4 @@
-# Knowledge base entry for argo-cd (chart argo-cd from argoproj/argo-helm).
+# Knowledge base entry for Argo CD.
 #
 # Schema v2 (planner.Load rejects a file that breaks it; see internal/planner/matrix.go):
 #   tool: string                 — canonical tool name (lowercase letters, digits, '-'); file is <tool>.yaml
@@ -16,20 +16,29 @@
 #       version_from: string     — image_tag | label (app.kubernetes.io/version)
 #     labels: {string: string}
 #   versions[]:                  — ascending by app_version, no duplicates
-#     app_version: string        — upstream app version, full semver without "v" ("1.14.0").
+#     app_version: string        — upstream app version, full semver without "v" ("1.14.0"): the minor's
+#                                  first release, or the patch upstream says to install instead.
 #                                  The entry also covers later patches of its minor, up to the next entry.
 #     chart_version: string      — Helm chart version that ships app_version, as published; ascending
-#     source: string             — release-notes URL for this version
-#     min_kubernetes: string     — earliest Kubernetes minor this version supports
-#     incompatible_with:         — optional; tool name or alias → app versions of that tool
-#       <tool>: [string]           known to break with this version
-#     breaking_changes[]:        — may be empty
+#     source: string             — upstream release notes or upgrade guide the entry is based on
+#     min_kubernetes: string     — earliest Kubernetes minor upstream supports or tests this version on,
+#                                  never below the Helm chart's kubeVersion floor
+#     incompatible_with:         — optional; tool name or alias → app versions of that tool known to
+#       <tool>: [string]           break with this version, only with an upstream source
+#     breaking_changes[]:        — changes since the previous entry that need attention; may be empty
 #       description: string      — human-readable summary
 #       type: string             — api_removal | crd_migration | config_change | behaviour_change
-#     risk_level: string         — low | medium | high | blocking: risk of upgrading to this version
+#     risk_level: string         — risk of upgrading to this version: low (nothing to do for a default
+#                                  install) | medium (a documented step or config review for some
+#                                  installs) | high (running workloads, traffic, keys or stored objects
+#                                  break if the steps are missed) | blocking (do not install)
 #     upgrade_notes: string      — operator guidance for the upgrade from the previous entry
 #
-# chart_version is the first argo-helm chart release that ships app_version.
+# One entry per Argo CD minor, verified 2026-09-30 against the upgrade guides
+# (https://argo-cd.readthedocs.io/en/stable/operator-manual/upgrading/overview/), the tested
+# Kubernetes versions of each release branch, and the argo-helm chart index
+# (https://argoproj.github.io/argo-helm). chart_version is the first argo-cd chart that ships the
+# app version; the chart's kubeVersion floor is ">=1.25.0-0" since chart 7.4.0.
 
 tool: argo-cd
 aliases:
@@ -46,111 +55,287 @@ detection:
 versions:
   - app_version: "2.7.0"
     chart_version: "5.30.0"
-    source: "https://github.com/argoproj/argo-cd/releases/tag/v2.7.0"
+    source: "https://argo-cd.readthedocs.io/en/stable/operator-manual/upgrading/2.6-2.7/"
     min_kubernetes: "1.23"
-    incompatible_with:
-      cert-manager: []
     breaking_changes:
-      - description: "ApplicationSet webhook server moved to a dedicated port 7000; Ingress rules must be updated"
+      - description: >
+          RBAC policies with * as resource and action also grant the new extensions resource
+        type: behaviour_change
+      - description: >
+          Notification templates use Masterminds/semver v3 through Sprig, which changes what a ^
+          constraint matches
+        type: behaviour_change
+      - description: >
+          The install manifests start the components with tini instead of entrypoint.sh (kept in
+          the images only until 2.8)
         type: config_change
-      - description: "argocd-notifications CRD field .spec.triggers[].template removed; use .spec.triggers[].send"
-        type: api_removal
+      - description: >
+          Deep link templates prefix fields with their kind (.resource.metadata.name instead of
+          .metadata.name)
+        type: config_change
     risk_level: medium
     upgrade_notes: >
-      Update any Ingress resources targeting the ApplicationSet webhook to point to port 7000.
-      Migrate argocd-notifications Trigger manifests to replace .spec.triggers[].template with
-      .spec.triggers[].send. Review RBAC policies — several default roles gained new rules.
-      Avoid ingress-nginx 1.5.0: its annotation processor conflicts with the ArgoCD gRPC-web
-      backend annotations.
+      Apply the 2.7 install manifests, not only new image tags. Narrow wildcard RBAC policies if
+      the extensions permission is unwanted. Bundled Helm 3.11.2 and Kustomize 5.0.1.
 
   - app_version: "2.8.0"
     chart_version: "5.43.0"
-    source: "https://github.com/argoproj/argo-cd/releases/tag/v2.8.0"
-    min_kubernetes: "1.23"
-    incompatible_with:
-      cert-manager: []
+    source: "https://argo-cd.readthedocs.io/en/stable/operator-manual/upgrading/2.7-2.8/"
+    min_kubernetes: "1.24"
     breaking_changes:
-      - description: "Kubernetes 1.22 support dropped"
-        type: behaviour_change
-      - description: "ApplicationSet generator list field .elements renamed to .list.elements for consistency"
+      - description: >
+          Config management plugins declared in the argocd-cm ConfigMap no longer work; they must
+          run as sidecar plugins
         type: config_change
-    risk_level: medium
+      - description: >
+          entrypoint.sh is removed from the images: deployments still using manifests from before
+          2.7 fail to start
+        type: behaviour_change
+      - description: "The cluster List API applies its query filters"
+        type: behaviour_change
+      - description: >
+          RBAC policies granting applications action/* also grant the new create-job and
+          create-workflow actions
+        type: behaviour_change
+    risk_level: high
     upgrade_notes: >
-      Verify cluster is running Kubernetes >= 1.23 before upgrading.
-      Update ApplicationSet manifests using the List generator to nest .elements under .list.
-      Upgrade ingress-nginx to >= 1.7.0 before this ArgoCD version.
+      Migrate argocd-cm plugins to sidecar plugins before upgrading: Applications that use them stop
+      rendering. Make sure the running manifests are the 2.7 ones (tini entrypoint).
 
   - app_version: "2.9.0"
     chart_version: "5.51.0"
-    source: "https://github.com/argoproj/argo-cd/releases/tag/v2.9.0"
+    source: "https://argo-cd.readthedocs.io/en/stable/operator-manual/upgrading/2.8-2.9/"
     min_kubernetes: "1.25"
-    incompatible_with:
-      cert-manager: []
-    breaking_changes:
-      - description: "ApplicationSet promoted to GA; beta CRD (argoproj.io/v1alpha1 ApplicationSet beta) removed"
-        type: api_removal
-      - description: "ApplicationSet controller merged into argocd-server; standalone argocd-applicationset-controller Deployment removed"
-        type: behaviour_change
-      - description: "Kubernetes 1.23 and 1.24 support dropped"
-        type: behaviour_change
-    risk_level: medium
+    breaking_changes: []
+    risk_level: low
     upgrade_notes: >
-      Requires Kubernetes >= 1.25. Remove the standalone argocd-applicationset-controller
-      Deployment and its RBAC resources after upgrade — they are now part of argocd-server.
-      ApplicationSet CRD is now argoproj.io/v1alpha1 stable; confirm no manifests reference beta paths.
-      Existing ApplicationSet resources are automatically migrated on first reconcile.
+      No breaking changes in upstream's 2.8 → 2.9 guide. Bundled Kustomize 5.2.1. From 2.9.16 the
+      argocd-redis NetworkPolicies no longer restrict egress; add an egress rule if you relied on it.
 
   - app_version: "2.10.0"
     chart_version: "5.55.0"
-    source: "https://github.com/argoproj/argo-cd/releases/tag/v2.10.0"
+    source: "https://argo-cd.readthedocs.io/en/stable/operator-manual/upgrading/2.9-2.10/"
     min_kubernetes: "1.25"
-    incompatible_with:
-      cert-manager: []
     breaking_changes:
-      - description: "argocd-dex container image base changed to distroless; custom dex plugins that rely on shell are broken"
+      - description: >
+          managedNamespaceMetadata no longer keeps labels and annotations applied client-side
+          (bundled kubectl 1.26 server-side apply)
         type: behaviour_change
-      - description: "Application .status.operationState.finishedAt field type changed from string to metav1.Time"
-        type: api_removal
     risk_level: medium
     upgrade_notes: >
-      Audit any custom Dex connector plugins or init containers that spawn a shell process
-      inside the Dex container — replace with distroless-compatible alternatives.
-      Update tooling that parses .status.operationState.finishedAt as a raw string.
+      Migrate a namespace's client-side-applied fields to server-side apply before enabling
+      managedNamespaceMetadata on it. Bundled Helm 3.14.3. From 2.10.11 the argocd-redis
+      NetworkPolicies no longer restrict egress.
 
   - app_version: "2.11.0"
     chart_version: "6.8.0"
-    source: "https://github.com/argoproj/argo-cd/releases/tag/v2.11.0"
-    min_kubernetes: "1.26"
-    incompatible_with:
-      cert-manager: []
-    breaking_changes:
-      - description: "Kubernetes 1.25 support dropped"
-        type: behaviour_change
-      - description: "argocd-repo-server now runs as non-root by default; volume mounts with root-owned files will fail"
-        type: config_change
-    risk_level: medium
+    source: "https://argo-cd.readthedocs.io/en/stable/operator-manual/upgrading/2.10-2.11/"
+    min_kubernetes: "1.25"
+    breaking_changes: []
+    risk_level: low
     upgrade_notes: >
-      Requires Kubernetes >= 1.26. Audit repo-server PersistentVolumeClaims and ConfigMap volume
-      mounts for files owned by root (uid 0). Change ownership to uid 999 (argocd) or use an
-      initContainer to chown before upgrade.
+      No breaking changes in upstream's 2.10 → 2.11 guide. The Application CRD gains initiatedBy
+      fields; apply the new CRDs with the upgrade. From 2.11.2 the argocd-redis NetworkPolicies no
+      longer restrict egress.
 
   - app_version: "2.12.0"
     chart_version: "7.4.0"
-    source: "https://github.com/argoproj/argo-cd/releases/tag/v2.12.0"
+    source: "https://argo-cd.readthedocs.io/en/stable/operator-manual/upgrading/2.11-2.12/"
     min_kubernetes: "1.26"
-    incompatible_with:
-      cert-manager: []
     breaking_changes:
-      - description: "Removed deprecated argoproj.io/v1alpha1 Application .spec.source.helm.valueFiles in favour of .spec.source.helm.valuesObject"
-        type: api_removal
-      - description: "Removed deprecated --app-resync-jitter flag from argocd-application-controller"
+      - description: >
+          A cluster secret with a project set is used only by Applications and ApplicationSets of
+          that project
+        type: behaviour_change
+      - description: "The redis and haproxy images come from ECR instead of Docker Hub"
         type: config_change
-      - description: "argocd-redis switched to Redis 7.x; data directory format incompatible with Redis 6.x snapshots"
-        type: crd_migration
+      - description: >
+          ApplicationSet label selector fields are atomic for server-side apply: one field manager
+          must own both matchLabels and matchExpressions
+        type: behaviour_change
     risk_level: medium
     upgrade_notes: >
-      Migrate all Application manifests using .spec.source.helm.valueFiles to
-      .spec.source.helm.valuesObject before upgrading. Remove --app-resync-jitter from
-      argocd-application-controller args. Delete the argocd-redis PVC before upgrading
-      to avoid Redis data-format errors — ArgoCD state is rebuilt from the live cluster.
-      Upgrade ingress-nginx to >= 1.11.0 if ArgoCD manages Ingress resources.
+      Unset project on cluster secrets shared by several projects, or their Applications lose the
+      cluster. Allow the ECR registry in image policies and mirrors. Bundled Helm 3.15.2.
+
+  - app_version: "2.13.0"
+    chart_version: "7.7.0"
+    source: "https://argo-cd.readthedocs.io/en/stable/operator-manual/upgrading/2.12-2.13/"
+    min_kubernetes: "1.27"
+    breaking_changes:
+      - description: >
+          Dex v2.39 validates LDAP usernames and passwords more strictly (special characters are
+          rejected)
+        type: behaviour_change
+      - description: >
+          Jobs started manually from a CronJob get a -YYMMDDHHmm suffix instead of -YYYYMMDDHHmm
+        type: behaviour_change
+      - description: "Downloaded logs use the .log extension instead of .txt"
+        type: behaviour_change
+    risk_level: medium
+    upgrade_notes: >
+      LDAP users with special characters in their credentials may fail to log in through Dex. Flux
+      resource actions and health checks are new; grant RBAC for the actions you use.
+
+  - app_version: "2.14.1"
+    chart_version: "7.8.0"
+    source: "https://argo-cd.readthedocs.io/en/stable/operator-manual/upgrading/2.13-2.14/"
+    min_kubernetes: "1.28"
+    breaking_changes:
+      - description: >
+          Project API responses no longer include credentials of project-scoped repositories and
+          clusters (GHSA-786q-9hcg-v9ff)
+        type: behaviour_change
+    risk_level: low
+    upgrade_notes: >
+      Use 2.14.1 or later: the v2.14.0 manifests reference an image that does not exist. Bundled
+      Helm 3.16.2. 2.14 is the last 2.x minor.
+
+  - app_version: "3.0.0"
+    chart_version: "8.0.0"
+    source: "https://argo-cd.readthedocs.io/en/stable/operator-manual/upgrading/2.14-3.0/"
+    min_kubernetes: "1.29"
+    breaking_changes:
+      - description: >
+          Fine-grained RBAC: update and delete on an Application no longer cover its managed
+          resources (update/* and delete/* are needed)
+        type: behaviour_change
+      - description: "Logs RBAC is enforced: applications get no longer grants logs"
+        type: behaviour_change
+      - description: >
+          Default resource.exclusions skip high-churn kinds (Endpoints, EndpointSlice, Lease,
+          cert-manager CertificateRequest, Cilium and Kyverno reports and others)
+        type: behaviour_change
+      - description: >
+          Metrics argocd_app_sync_status, argocd_app_health_status and argocd_app_created_time are
+          removed (use the labels of argocd_app_info)
+        type: api_removal
+      - description: >
+          With Dex SSO, RBAC subjects come from the federated_claims.user_id claim instead of sub
+        type: behaviour_change
+      - description: "Repository configuration in argocd-cm is removed; repositories must be Secrets"
+        type: config_change
+      - description: "ApplicationSet applyNestedSelectors is ignored: nested selectors always apply"
+        type: behaviour_change
+      - description: >
+          Resource tracking defaults to annotations instead of labels, and resource health is no
+          longer stored in the Application status
+        type: behaviour_change
+      - description: >
+          Bundled Helm 3.17.1 applies null values from values.yaml instead of ignoring them
+        type: behaviour_change
+    risk_level: high
+    upgrade_notes: >
+      Major release: work through the detection steps of the 2.14 → 3.0 guide. The 2.x behaviour can
+      be kept with server.rbac.disableApplicationFineGrainedRBACInheritance: "false",
+      application.resourceTrackingMethod: label, controller.resource.health.persist: "true" and a
+      custom resource.exclusions. Remove null values from Helm values files.
+
+  - app_version: "3.1.0"
+    chart_version: "8.3.0"
+    source: "https://argo-cd.readthedocs.io/en/stable/operator-manual/upgrading/3.0-3.1/"
+    min_kubernetes: "1.31"
+    breaking_changes:
+      - description: >
+          With PKCE, the server runs the OIDC authorization code flow: the identity provider must
+          allow the /auth/callback redirect URI
+        type: config_change
+      - description: "Symlinks out of the --staticassets directory return HTTP 500"
+        type: behaviour_change
+    risk_level: medium
+    upgrade_notes: >
+      If oidc.config sets enablePKCEAuthentication, add https://<argocd-host>/auth/callback to the
+      client's redirect URIs before upgrading. The v1 resource actions API is deprecated in favour of
+      /resource/actions/v2. Bundled Helm 3.18.4 and Kustomize 5.7.0.
+
+  - app_version: "3.2.0"
+    chart_version: "9.1.0"
+    source: "https://argo-cd.readthedocs.io/en/stable/operator-manual/upgrading/3.1-3.2/"
+    min_kubernetes: "1.31"
+    breaking_changes:
+      - description: "Source Hydrator requires a non-root sync path for every Application"
+        type: config_change
+      - description: >
+          CronJob health is evaluated: an Application can turn Degraded when a CronJob's last Job
+          failed
+        type: behaviour_change
+      - description: "ApplicationSet status.resources is limited to 5000 entries by default"
+        type: behaviour_change
+    risk_level: medium
+    upgrade_notes: >
+      Set .spec.sourceHydrator.syncSource.path to a subdirectory for hydrated Applications. Annotate
+      CronJobs with argocd.argoproj.io/ignore-healthcheck: "true" to keep them out of the health.
+
+  - app_version: "3.3.2"
+    chart_version: "9.4.4"
+    source: "https://argo-cd.readthedocs.io/en/stable/operator-manual/upgrading/3.2-3.3/"
+    min_kubernetes: "1.32"
+    breaking_changes:
+      - description: >
+          The ApplicationSet CRD is too large for client-side apply: upgrade with
+          `kubectl apply --server-side --force-conflicts`, or ServerSideApply=true when Argo CD
+          manages itself (helm upgrade is not affected)
+        type: crd_migration
+      - description: >
+          Source Hydrator records hydration state in git notes and no longer cleans the
+          application path
+        type: behaviour_change
+      - description: "Anonymous Settings API responses no longer include resourceOverrides"
+        type: behaviour_change
+      - description: >
+          The Kubernetes server-side request timeout moves from ARGOCD_K8S_TCP_TIMEOUT to
+          ARGOCD_K8S_SERVER_SIDE_TIMEOUT
+        type: config_change
+    risk_level: medium
+    upgrade_notes: >
+      Use 3.3.2 or later: 3.3.0 and 3.3.1 could fail the client-side apply migration after
+      switching to server-side apply; drop a ClientSideApplyMigration=false workaround after
+      upgrading. Bundled Helm 3.19.2 (Helm 2 is no longer supported) and Kustomize 5.8.0.
+
+  - app_version: "3.4.1"
+    chart_version: "9.5.12"
+    source: "https://argo-cd.readthedocs.io/en/stable/operator-manual/upgrading/3.3-3.4/"
+    min_kubernetes: "1.32"
+    breaking_changes:
+      - description: >
+          The cluster version is stored as vMajor.Minor.Patch: ApplicationSet cluster generators
+          matching argocd.argoproj.io/kubernetes-version need the new format
+        type: behaviour_change
+      - description: >
+          Application health is Missing only when every resource is missing; otherwise it reflects
+          the existing resources
+        type: behaviour_change
+      - description: >
+          gRPC service config lookups through DNS TXT records are off by default
+          (GRPC_ENABLE_TXT_SERVICE_CONFIG=false)
+        type: behaviour_change
+    risk_level: medium
+    upgrade_notes: >
+      The first chart for 3.4 (9.5.12) ships 3.4.1. Automation that detects missing resources from
+      the health status should check OutOfSync instead. Bundled Dex 2.45 enables
+      ContinueOnConnectorFailure by default.
+
+  - app_version: "3.5.0"
+    chart_version: "10.2.3"
+    source: "https://argo-cd.readthedocs.io/en/stable/operator-manual/upgrading/3.4-3.5/"
+    min_kubernetes: "1.33"
+    breaking_changes:
+      - description: >
+          Charts are rendered with Helm 4.2.0: plain-HTTP OCI repositories, and OCI dependency
+          repositories, need insecureOCIForceHttp; spec.source.helm.version v3 is ignored
+        type: behaviour_change
+      - description: >
+          The UI moved to React 19: UI extensions must be rebuilt to externalize react/jsx-runtime
+        type: behaviour_change
+      - description: >
+          Event-listing gRPC methods return an Argo CD EventList type: generated gRPC and OpenAPI
+          clients must be regenerated
+        type: behaviour_change
+      - description: >
+          The per-application CSS class on the details pages is prefixed with user-app-
+        type: config_change
+    risk_level: medium
+    upgrade_notes: >
+      Set insecureOCIForceHttp on plain-HTTP OCI repositories before upgrading; a repository that
+      needs both insecure TLS and plain HTTP has no workaround under Helm 4. --repo-server-strict-tls
+      is deprecated in favour of --repo-server-ca-cert-path.
