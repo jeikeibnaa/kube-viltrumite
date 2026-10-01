@@ -4,14 +4,20 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
 	"testing/fstest"
 
+	"github.com/Masterminds/semver/v3"
+
 	"github.com/jeikeibnaa/kube-viltrumite/internal/ai"
 	"github.com/jeikeibnaa/kube-viltrumite/knowledge"
 )
+
+// minorPattern is how the shipped files write min_kubernetes: a Kubernetes minor.
+var minorPattern = regexp.MustCompile(`^1\.[0-9]+$`)
 
 // loadEmbedded loads the knowledge base compiled into the binary — the same
 // data the operator uses when --knowledge-base-path is not set.
@@ -313,14 +319,22 @@ func TestLoad_ReportsEveryProblem(t *testing.T) {
 }
 
 // TestLoad_IncompatibleWithAlias checks that incompatible_with may name a
-// tool by one of its aliases.
+// tool by one of its aliases, and that Resolve returns it with the entry.
 func TestLoad_IncompatibleWithAlias(t *testing.T) {
 	fsys := fstest.MapFS{
 		"a.yaml": {Data: doc("a", "aliases: [a-chart]\n", entry(nil))},
 		"b.yaml": {Data: doc("b", "", entry(map[string]string{"incompatible_with": `{a-chart: ["1.0.0"]}`}))},
 	}
-	if _, err := Load(fsys); err != nil {
+	m, err := Load(fsys)
+	if err != nil {
 		t.Fatalf("Load: %v", err)
+	}
+	e, err := m.Resolve("b", "0.9.0", "1.0.0")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got := e.IncompatibleWith["a-chart"]; !stringSliceEqual(got, []string{"1.0.0"}) {
+		t.Errorf("IncompatibleWith[a-chart] = %v, want [1.0.0]", got)
 	}
 }
 
@@ -388,6 +402,8 @@ func TestKnowledgeBase(t *testing.T) {
 			if !ok {
 				t.Fatalf("%s must declare tool %q", f, name)
 			}
+			sources := map[string]string{}
+			var prevMinK8s *semver.Version
 			for _, v := range tc.Versions {
 				if want := normalizeVersion(v.AppVersion); v.AppVersion != want {
 					t.Errorf("app_version %q: write it as %q", v.AppVersion, want)
@@ -397,6 +413,22 @@ func TestKnowledgeBase(t *testing.T) {
 				}
 				if !strings.HasPrefix(v.Source, "https://") {
 					t.Errorf("%s: source %q is not https", v.AppVersion, v.Source)
+				}
+				if other, dup := sources[v.Source]; dup {
+					t.Errorf("%s: source %q is already the source of %s", v.AppVersion, v.Source, other)
+				}
+				sources[v.Source] = v.AppVersion
+
+				// min_kubernetes is a minor ("1.29"), and a newer release never
+				// supports an older Kubernetes than the release before it.
+				if !minorPattern.MatchString(v.MinKubernetes) {
+					t.Errorf("%s: min_kubernetes %q: write it as a minor such as \"1.29\"", v.AppVersion, v.MinKubernetes)
+				}
+				if minK8s, err := parseVersion(v.MinKubernetes); err == nil {
+					if prevMinK8s != nil && minK8s.LessThan(prevMinK8s) {
+						t.Errorf("%s: min_kubernetes %s is below the previous entry's %s", v.AppVersion, minK8s, prevMinK8s)
+					}
+					prevMinK8s = minK8s
 				}
 			}
 		})
@@ -541,7 +573,8 @@ func TestAppVersionForChart(t *testing.T) {
 	}{
 		{name: "argo-cd chart", tool: "argo-cd", chart: "5.43.0", want: "2.8.0", wantOK: true},
 		{name: "alias and v prefix", tool: "kube-prometheus-stack", chart: "v58.0.0", want: "0.73.0", wantOK: true},
-		{name: "chart published as v1.14.0", tool: "cert-manager", chart: "1.14.0", want: "1.14.0", wantOK: true},
+		{name: "chart published as v1.15.0", tool: "cert-manager", chart: "1.15.0", want: "1.15.0", wantOK: true},
+		{name: "chart ships a patch release", tool: "vault", chart: "0.29.1", want: "1.18.1", wantOK: true},
 		{name: "chart between entries is not guessed", tool: "argo-cd", chart: "5.46.8"},
 		{name: "unparsable chart version", tool: "vault", chart: "latest"},
 		{name: "unknown tool", tool: "velero", chart: "1.0.0"},
@@ -577,7 +610,6 @@ func TestResolve(t *testing.T) {
 		wantChartVersion  string
 		wantMinK8s        string
 		wantRisk          string
-		wantIncompatESO   []string
 		wantBreakingCount int
 	}{
 		{
@@ -590,10 +622,10 @@ func TestResolve(t *testing.T) {
 			wantChartVersion:  "v1.12.0",
 			wantMinK8s:        "1.22",
 			wantRisk:          "medium",
-			wantIncompatESO:   []string{},
 			wantBreakingCount: 2,
 		},
 		{
+			// Upstream supports 1.21 → 1.27, but the chart requires 1.22.
 			name:              "1.12 to 1.13",
 			tool:              "cert-manager",
 			fromVersion:       "1.12",
@@ -601,24 +633,23 @@ func TestResolve(t *testing.T) {
 			wantFrom:          "1.12.0",
 			wantAppVersion:    "1.13.0",
 			wantChartVersion:  "v1.13.0",
-			wantMinK8s:        "1.23",
-			wantRisk:          "low",
-			wantIncompatESO:   []string{"0.7.0", "0.7.1"},
+			wantMinK8s:        "1.22",
+			wantRisk:          "medium",
 			wantBreakingCount: 2,
 		},
 		{
 			// The raw versions the cluster scanner reports must match the
-			// knowledge-base entries.
-			name:              "v1.13.0 to v1.14.0",
+			// knowledge-base entries. Upstream says to install 1.14.2, so the
+			// 1.14 entry is that patch.
+			name:              "v1.13.0 to v1.14.2",
 			tool:              "cert-manager",
 			fromVersion:       "v1.13.0",
-			toVersion:         "v1.14.0",
+			toVersion:         "v1.14.2",
 			wantFrom:          "1.13.0",
-			wantAppVersion:    "1.14.0",
-			wantChartVersion:  "v1.14.0",
-			wantMinK8s:        "1.23",
-			wantRisk:          "low",
-			wantIncompatESO:   []string{"0.8.0"},
+			wantAppVersion:    "1.14.2",
+			wantChartVersion:  "v1.14.2",
+			wantMinK8s:        "1.24",
+			wantRisk:          "medium",
 			wantBreakingCount: 2,
 		},
 		{
@@ -630,9 +661,58 @@ func TestResolve(t *testing.T) {
 			wantAppVersion:    "1.15.0",
 			wantChartVersion:  "v1.15.0",
 			wantMinK8s:        "1.25",
-			wantRisk:          "high",
-			wantIncompatESO:   []string{"0.9.0", "0.9.1"},
+			wantRisk:          "medium",
 			wantBreakingCount: 3,
+		},
+		{
+			// rotationPolicy defaults to Always: high risk.
+			name:              "1.17 to 1.18",
+			tool:              "cert-manager",
+			fromVersion:       "v1.17.4",
+			toVersion:         "v1.18.2",
+			wantFrom:          "1.17.4",
+			wantAppVersion:    "1.18.0",
+			wantChartVersion:  "v1.18.0",
+			wantMinK8s:        "1.29",
+			wantRisk:          "high",
+			wantBreakingCount: 4,
+		},
+		{
+			name:              "1.20 to 1.21",
+			tool:              "cert-manager",
+			fromVersion:       "1.20.4",
+			toVersion:         "1.21.2",
+			wantFrom:          "1.20.4",
+			wantAppVersion:    "1.21.0",
+			wantChartVersion:  "v1.21.0",
+			wantMinK8s:        "1.33",
+			wantRisk:          "medium",
+			wantBreakingCount: 3,
+		},
+		{
+			name:              "Argo CD major version",
+			tool:              "argo-cd",
+			fromVersion:       "v2.14.11",
+			toVersion:         "v3.0.12",
+			wantFrom:          "2.14.11",
+			wantAppVersion:    "3.0.0",
+			wantChartVersion:  "8.0.0",
+			wantMinK8s:        "1.29",
+			wantRisk:          "high",
+			wantBreakingCount: 9,
+		},
+		{
+			// Istio 1.31 charts come from blob.istio.io.
+			name:              "Istio 1.30 to 1.31",
+			tool:              "istio",
+			fromVersion:       "1.30.5",
+			toVersion:         "1.31.1",
+			wantFrom:          "1.30.5",
+			wantAppVersion:    "1.31.0",
+			wantChartVersion:  "1.31.0",
+			wantMinK8s:        "1.32",
+			wantRisk:          "high",
+			wantBreakingCount: 4,
 		},
 	}
 
@@ -668,11 +748,6 @@ func TestResolve(t *testing.T) {
 				t.Error("UpgradeNotes: must not be empty")
 			}
 
-			gotESO := entry.IncompatibleWith["external-secrets"]
-			if !stringSliceEqual(gotESO, tc.wantIncompatESO) {
-				t.Errorf("IncompatibleWith[external-secrets]: got %v, want %v", gotESO, tc.wantIncompatESO)
-			}
-
 			if len(entry.BreakingChanges) != tc.wantBreakingCount {
 				t.Errorf("BreakingChanges count: got %d, want %d", len(entry.BreakingChanges), tc.wantBreakingCount)
 			}
@@ -697,12 +772,13 @@ func TestResolve_Covering(t *testing.T) {
 		wantFrom  string
 	}{
 		{
+			// cert-manager's 1.14 entry is 1.14.2, the patch upstream says to install.
 			name: "patch release uses its minor's entry", tool: "cert-manager", from: "1.13.2", to: "v1.14.3",
-			wantTool: "cert-manager", wantApp: "1.14.0", wantChart: "v1.14.0", wantRisk: "low", wantFrom: "1.13.2",
+			wantTool: "cert-manager", wantApp: "1.14.2", wantChart: "v1.14.2", wantRisk: "medium", wantFrom: "1.13.2",
 		},
 		{
 			// Audit finding #6: 0.9.0 and 0.9.5 are separate entries, so the
-			// low-risk patch must not resolve to the high-risk 0.9.0 entry.
+			// patch must resolve to its own entry, not to 0.9.0.
 			name: "patch entry is not collapsed into its minor", tool: "external-secrets", from: "0.9.0", to: "0.9.5",
 			wantTool: "external-secrets", wantApp: "0.9.5", wantChart: "0.9.5", wantRisk: "low", wantFrom: "0.9.0",
 		},
@@ -711,20 +787,24 @@ func TestResolve_Covering(t *testing.T) {
 			wantTool: "external-secrets", wantApp: "0.9.5", wantChart: "0.9.5", wantRisk: "low", wantFrom: "0.9.5",
 		},
 		{
-			name: "release before a patch entry uses the earlier entry", tool: "external-secrets", from: "0.8.0", to: "0.9.3",
-			wantTool: "external-secrets", wantApp: "0.9.0", wantChart: "0.9.0", wantRisk: "high", wantFrom: "0.8.0",
+			name: "release before a patch entry uses the earlier entry", tool: "external-secrets", from: "0.10.0", to: "0.10.3",
+			wantTool: "external-secrets", wantApp: "0.10.0", wantChart: "0.10.0", wantRisk: "medium", wantFrom: "0.10.0",
 		},
 		{
-			name: "two entries on one minor", tool: "vault", from: "1.15.1", to: "1.15.3",
-			wantTool: "vault", wantApp: "1.15.2", wantChart: "0.27.0", wantRisk: "medium", wantFrom: "1.15.1",
+			name: "two entries on one minor", tool: "vault", from: "1.20.1", to: "1.20.6",
+			wantTool: "vault", wantApp: "1.20.4", wantChart: "0.31.0", wantRisk: "medium", wantFrom: "1.20.1",
+		},
+		{
+			name: "three entries on one minor", tool: "vault", from: "2.0.2", to: "2.0.3",
+			wantTool: "vault", wantApp: "2.0.3", wantChart: "0.34.0", wantRisk: "low", wantFrom: "2.0.2",
 		},
 		{
 			name: "alias resolves to the canonical tool", tool: "kube-prometheus-stack", from: "v0.63.0", to: "v0.66.0",
-			wantTool: "prometheus-stack", wantApp: "0.66.0", wantChart: "48.0.0", wantRisk: "high", wantFrom: "0.63.0",
+			wantTool: "prometheus-stack", wantApp: "0.66.0", wantChart: "47.0.0", wantRisk: "medium", wantFrom: "0.63.0",
 		},
 		{
-			name: "unparsable from version is kept as is", tool: "cert-manager", from: "unknown", to: "1.14",
-			wantTool: "cert-manager", wantApp: "1.14.0", wantChart: "v1.14.0", wantRisk: "low", wantFrom: "unknown",
+			name: "unparsable from version is kept as is", tool: "cert-manager", from: "unknown", to: "1.15",
+			wantTool: "cert-manager", wantApp: "1.15.0", wantChart: "v1.15.0", wantRisk: "medium", wantFrom: "unknown",
 		},
 	}
 	for _, tc := range tests {
@@ -754,9 +834,13 @@ func TestResolve_Errors(t *testing.T) {
 	}{
 		{name: "unknown tool", tool: "velero", to: "1.1"},
 		{name: "version not in the knowledge base", tool: "cert-manager", to: "1.99"},
-		{name: "minor above the last entry", tool: "cert-manager", to: "1.16.0"},
+		{name: "minor above the last entry", tool: "cert-manager", to: "1.22.0"},
 		{name: "minor below the first entry", tool: "cert-manager", to: "1.11.5"},
-		{name: "pre-release before its entry", tool: "cert-manager", to: "1.14.0-rc.1"},
+		{name: "pre-release before its entry", tool: "cert-manager", to: "1.15.0-rc.1"},
+		// Upstream says not to install 1.14.0 or 1.19.0: their minors' entries
+		// are 1.14.2 and 1.19.1, so the knowledge base covers neither.
+		{name: "release below its minor's entry", tool: "cert-manager", to: "1.14.0"},
+		{name: "release upstream says to skip", tool: "cert-manager", to: "v1.19.0"},
 		{name: "unparsable target", tool: "cert-manager", to: "latest"},
 	}
 	for _, tc := range tests {
@@ -875,48 +959,60 @@ func TestLatestSafeVersion(t *testing.T) {
 		wantFound   bool
 	}{
 		{
-			// 1.14.0 is low, 1.15.0 is high — only 1.14.0 qualifies at MEDIUM ceiling
-			name:        "medium tolerance above 1.13 finds 1.14.0",
-			tool:        "cert-manager",
-			current:     "1.13",
-			tolerance:   ai.RiskMedium,
-			wantVersion: "1.14.0",
+			// Argo CD 2.14.1 is low; everything above it is medium or high.
+			name:        "a riskier newest version is skipped for one within tolerance",
+			tool:        "argo-cd",
+			current:     "v2.8.4",
+			tolerance:   ai.RiskLow,
+			wantVersion: "2.14.1",
 			wantRisk:    ai.RiskLow,
 			wantFound:   true,
 		},
 		{
-			// 1.14.2 is past the 1.14.0 entry; 1.15.0 is above the ceiling
+			// Only the target entry's risk counts: 2.8.4 → 3.5.0 is reported
+			// medium although 3.0.0 on the way is high. Multi-hop paths (S31)
+			// are to take the entries in between into account.
+			name:        "entries between the installed and the target version do not count",
+			tool:        "argo-cd",
+			current:     "v2.8.4",
+			tolerance:   ai.RiskMedium,
+			wantVersion: "3.5.0",
+			wantRisk:    ai.RiskMedium,
+			wantFound:   true,
+		},
+		{
+			// 1.21.2 is past the 1.21.0 entry, the last one.
 			name:      "patch above an entry is not below it",
 			tool:      "cert-manager",
-			current:   "v1.14.2",
-			tolerance: ai.RiskMedium,
+			current:   "v1.21.2",
+			tolerance: ai.RiskHigh,
 			wantFound: false,
 		},
 		{
-			// 1.15.0 is the last entry; nothing above it
-			name:      "low tolerance above 1.15 finds nothing",
+			// No cert-manager entry is low risk.
+			name:      "nothing within tolerance",
 			tool:      "cert-manager",
-			current:   "1.15",
+			current:   "1.13",
 			tolerance: ai.RiskLow,
 			wantFound: false,
 		},
 		{
-			// Audit finding #6: the old major.minor comparison saw 0.10.5 as
-			// equal to 0.10.0 and never recommended the patch.
+			// Audit finding #6: the old major.minor comparison saw every 2.0.x
+			// as equal and never recommended a patch entry.
 			name:        "patch entry above the installed version",
-			tool:        "external-secrets",
-			current:     "v0.10.0",
+			tool:        "vault",
+			current:     "v2.0.2",
 			tolerance:   ai.RiskLow,
-			wantVersion: "0.10.5",
+			wantVersion: "2.0.4",
 			wantRisk:    ai.RiskLow,
 			wantFound:   true,
 		},
 		{
 			name:        "installed patch entry itself is not recommended",
-			tool:        "external-secrets",
-			current:     "0.9.5",
-			tolerance:   ai.RiskMedium,
-			wantVersion: "0.10.5",
+			tool:        "vault",
+			current:     "2.0.3",
+			tolerance:   ai.RiskLow,
+			wantVersion: "2.0.4",
 			wantRisk:    ai.RiskLow,
 			wantFound:   true,
 		},
@@ -925,7 +1021,7 @@ func TestLatestSafeVersion(t *testing.T) {
 			tool:        "kube-prometheus-stack",
 			current:     "v0.66.0",
 			tolerance:   ai.RiskMedium,
-			wantVersion: "0.76.0",
+			wantVersion: "0.94.0",
 			wantRisk:    ai.RiskMedium,
 			wantFound:   true,
 		},
@@ -972,8 +1068,9 @@ func TestLatestVersion(t *testing.T) {
 		want   string
 		wantOK bool
 	}{
-		{tool: "cert-manager", want: "1.15.0", wantOK: true},
-		{tool: "kube-prometheus-stack", want: "0.76.0", wantOK: true},
+		{tool: "cert-manager", want: "1.21.0", wantOK: true},
+		{tool: "kube-prometheus-stack", want: "0.94.0", wantOK: true},
+		{tool: "vault", want: "2.0.4", wantOK: true},
 		{tool: "velero"},
 	}
 	for _, tc := range tests {
