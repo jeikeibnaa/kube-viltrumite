@@ -99,7 +99,7 @@ type healthResponse struct {
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, healthResponse{Status: "ok", Version: "0.1.0"})
+	writeJSON(w, http.StatusOK, healthResponse{Status: "ok", Version: "0.2.0"})
 }
 
 type stackUpgradeView struct {

@@ -1,4 +1,4 @@
-# Knowledge base entry for istio (Helm charts base and istiod).
+# Knowledge base entry for Istio.
 #
 # Schema v2 (planner.Load rejects a file that breaks it; see internal/planner/matrix.go):
 #   tool: string                 — canonical tool name (lowercase letters, digits, '-'); file is <tool>.yaml
@@ -16,22 +16,31 @@
 #       version_from: string     — image_tag | label (app.kubernetes.io/version)
 #     labels: {string: string}
 #   versions[]:                  — ascending by app_version, no duplicates
-#     app_version: string        — upstream app version, full semver without "v" ("1.14.0").
+#     app_version: string        — upstream app version, full semver without "v" ("1.14.0"): the minor's
+#                                  first release, or the patch upstream says to install instead.
 #                                  The entry also covers later patches of its minor, up to the next entry.
 #     chart_version: string      — Helm chart version that ships app_version, as published; ascending
-#     source: string             — release-notes URL for this version
-#     min_kubernetes: string     — earliest Kubernetes minor this version supports
-#     incompatible_with:         — optional; tool name or alias → app versions of that tool
-#       <tool>: [string]           known to break with this version
-#     breaking_changes[]:        — may be empty
+#     source: string             — upstream release notes or upgrade guide the entry is based on
+#     min_kubernetes: string     — earliest Kubernetes minor upstream supports or tests this version on,
+#                                  never below the Helm chart's kubeVersion floor
+#     incompatible_with:         — optional; tool name or alias → app versions of that tool known to
+#       <tool>: [string]           break with this version, only with an upstream source
+#     breaking_changes[]:        — changes since the previous entry that need attention; may be empty
 #       description: string      — human-readable summary
 #       type: string             — api_removal | crd_migration | config_change | behaviour_change
-#     risk_level: string         — low | medium | high | blocking: risk of upgrading to this version
+#     risk_level: string         — risk of upgrading to this version: low (nothing to do for a default
+#                                  install) | medium (a documented step or config review for some
+#                                  installs) | high (running workloads, traffic, keys or stored objects
+#                                  break if the steps are missed) | blocking (do not install)
 #     upgrade_notes: string      — operator guidance for the upgrade from the previous entry
 #
-# Istio's Helm charts (base, istiod, gateway) share the app version. "base" is a generic chart
-# name, so alias_origins makes it count only for a chart that comes from Istio; istiod alone
-# already identifies an install.
+# One entry per Istio minor, verified 2026-09-30 against its upgrade notes
+# (https://istio.io/latest/news/releases/), the supported Kubernetes versions in istio.io's
+# data/compatibility/supportStatus.yml, and the chart indexes (istio-release.storage.googleapis.com
+# up to 1.30, https://blob.istio.io/istio-release/charts from 1.31). The base and istiod charts
+# publish the Istio version as chart version and set no kubeVersion. Every entry assumes upstream's
+# procedure: upgrade the control plane one minor at a time (canary upgrades may skip one), then
+# restart injected workloads so their sidecars match.
 
 tool: istio
 aliases:
@@ -47,118 +56,296 @@ detection:
       container: discovery
       image: istio/pilot
       version_from: image_tag
+    # The 1.30 charts default to the registry.istio.io/release hub (1.31 is back on docker.io/istio).
+    - image: registry.istio.io/release/pilot
+      namespace_hint: istio-system
+      version_from: image_tag
 
 versions:
   - app_version: "1.18.0"
     chart_version: "1.18.0"
-    source: "https://istio.io/latest/news/releases/1.18.x/announcing-1.18/"
-    min_kubernetes: "1.25"
-    incompatible_with:
-      cert-manager:
-        - "1.12"   # ACME HTTP01 solver pod injection conflicts with istio-proxy sidecar in 1.12
-        - "1.12.1"
-      argo-cd: []
+    source: "https://istio.io/latest/news/releases/1.18.x/announcing-1.18/upgrade-notes/"
+    min_kubernetes: "1.24"
     breaking_changes:
-      - description: "Istio 1.18 drops support for Kubernetes 1.24 and earlier"
+      - description: >
+          Gateways derive their proxy concurrency from the CPU limit (or ProxyConfig.concurrency),
+          as sidecars do, instead of using every core of the node
         type: behaviour_change
-      - description: "EnvoyFilter .spec.configPatches[].match.proxy.metadata field removed; use .spec.workloadSelector instead"
-        type: api_removal
-      - description: "All workload sidecars must be restarted after upgrade to pick up new Envoy xDS configuration"
+      - description: >
+          Gateway API automated deployments are fully rendered Deployments that roll when their
+          revision changes; the control plane must be on 1.16.5+ or 1.17.3+ first
         type: behaviour_change
-    risk_level: high
+    risk_level: medium
     upgrade_notes: >
-      Requires Kubernetes >= 1.25. Plan a rolling restart of ALL workload Deployments and
-      StatefulSets after the control plane upgrade — mismatched sidecar and control plane
-      versions cause xDS config errors. Use `kubectl rollout restart deployment -n <ns>` per
-      namespace. Upgrade cert-manager to >= 1.13 before this Istio version to avoid ACME
-      solver injection conflicts. Migrate EnvoyFilter resources away from proxy.metadata matchers.
+      To keep gateways on every core, set concurrency 0 in their proxy.istio.io/config annotation
+      or remove their CPU limits.
 
   - app_version: "1.19.0"
     chart_version: "1.19.0"
-    source: "https://istio.io/latest/news/releases/1.19.x/announcing-1.19/"
+    source: "https://istio.io/latest/news/releases/1.19.x/announcing-1.19/upgrade-notes/"
     min_kubernetes: "1.25"
-    incompatible_with:
-      cert-manager:
-        - "1.12"   # ACME solver conflict persists in cert-manager 1.12 with istio 1.19
-      argo-cd: []
     breaking_changes:
-      - description: "All workload sidecars must be restarted after upgrade — required on every Istio minor version bump"
-        type: behaviour_change
-      - description: "istio-ingressgateway Service now defaults to LoadBalancer type; NodePort installations must set explicit type in values"
+      - description: "EnvoyFilter must use canonical Envoy filter names"
         type: config_change
-      - description: "Telemetry API v1alpha1 deprecated; v1 promoted as stable — existing Telemetry resources must be migrated"
-        type: api_removal
-    risk_level: high
+      - description: "EnvoyFilter extension injection must set typed_config; lookup by name alone is removed"
+        type: config_change
+      - description: >
+          The base chart no longer ships istiod's ClusterRoles, Roles, bindings and ServiceAccount;
+          the istiod chart owns them under new names
+        type: config_change
+      - description: 'Gateway API routes with a Service parentRef must set group: ""'
+        type: config_change
+    risk_level: medium
     upgrade_notes: >
-      Plan sidecar rolling restart across all namespaces after control plane upgrade.
-      Verify istio-ingressgateway Service type is explicitly set in helm values if using NodePort.
-      Migrate Telemetry resources from v1alpha1 to v1 before upgrading.
+      Run `istioctl analyze` for the EnvoyFilter deprecation warnings before upgrading, and fix
+      Gateway API routes that attach to Services.
 
   - app_version: "1.20.0"
     chart_version: "1.20.0"
-    source: "https://istio.io/latest/news/releases/1.20.x/announcing-1.20/"
-    min_kubernetes: "1.26"
-    incompatible_with:
-      cert-manager:
-        - "1.12"   # ACME solver sidecar injection conflict still present in cert-manager 1.12
-        - "1.13"   # istio 1.20 mTLS strict mode blocks cert-manager ACME HTTP01 challenge pods in 1.13
-      argo-cd: []
+    source: "https://istio.io/latest/news/releases/1.20.x/announcing-1.20/upgrade-notes/"
+    min_kubernetes: "1.25"
     breaking_changes:
-      - description: "Kubernetes 1.25 support dropped"
+      - description: >
+          Envoy filters run in one order for inbound, outbound and gateway proxies; EnvoyFilters that
+          relied on the old order can behave differently
         type: behaviour_change
-      - description: "All workload sidecars must be restarted after upgrade — required on every Istio minor version bump"
+      - description: "Sidecars get a startupProbe by default"
         type: behaviour_change
-      - description: "WasmPlugin .spec.imagePullPolicy field now required; previously defaulted to IfNotPresent"
-        type: config_change
-    risk_level: high
+    risk_level: medium
     upgrade_notes: >
-      Requires Kubernetes >= 1.26. Plan sidecar rolling restart across all namespaces.
-      Upgrade cert-manager to >= 1.14 before this Istio version to avoid mTLS strict mode
-      blocking ACME HTTP01 challenge pods. Add explicit imagePullPolicy to all WasmPlugin resources.
+      ExternalName Services become aliases in 1.21; opt in early with ENABLE_EXTERNAL_NAME_ALIAS=true
+      to find the VirtualServices and DestinationRules that need changes.
 
   - app_version: "1.21.0"
     chart_version: "1.21.0"
-    source: "https://istio.io/latest/news/releases/1.21.x/announcing-1.21/"
+    source: "https://istio.io/latest/news/releases/1.21.x/announcing-1.21/upgrade-notes/"
     min_kubernetes: "1.26"
-    incompatible_with:
-      cert-manager: []
-      argo-cd: []
     breaking_changes:
-      - description: "All workload sidecars must be restarted after upgrade — required on every Istio minor version bump"
+      - description: >
+          ENABLE_AUTO_SNI defaults to true: SNI is set from the HTTP host when a DestinationRule sets
+          none
         type: behaviour_change
-      - description: "ServiceEntry .spec.endpoints[].labels field now immutable after creation; updates require resource recreation"
-        type: api_removal
-      - description: "Istio CNI plugin enabled by default in istioctl install; explicit --set components.cni.enabled=false required to opt out"
+      - description: >
+          VERIFY_CERT_AT_CLIENT defaults to true: server certificates are verified against the OS CAs
+          when a DestinationRule sets no caCertificates
+        type: behaviour_change
+      - description: >
+          ExternalName Services are aliases: VirtualServices routing to one need the referenced
+          service to exist, and DestinationRules no longer apply to them
+        type: behaviour_change
+      - description: >
+          Kubernetes Gateway deployments are labelled gateway.networking.k8s.io/gateway-name
+          (istio.io/gateway-name is still added for now)
         type: config_change
     risk_level: high
     upgrade_notes: >
-      Plan sidecar rolling restart across all namespaces after control plane upgrade.
-      Audit ServiceEntry resources that update endpoint labels at runtime — replace with
-      delete-and-recreate workflows. If CNI plugin is not desired, add
-      --set components.cni.enabled=false to istioctl install invocations.
+      Egress to services with private CAs fails once certificates are verified: set caCertificates
+      or insecureSkipVerify in their DestinationRules, or install with compatibilityVersion=1.20
+      while you adapt. ENABLE_EXTERNAL_NAME_ALIAS=false opts out of the ExternalName change.
 
   - app_version: "1.22.0"
     chart_version: "1.22.0"
-    source: "https://istio.io/latest/news/releases/1.22.x/announcing-1.22/"
+    source: "https://istio.io/latest/news/releases/1.22.x/announcing-1.22/upgrade-notes/"
     min_kubernetes: "1.27"
-    incompatible_with:
-      cert-manager:
-        - "1.12"   # ACME solver injection conflict
-        - "1.13"   # mTLS strict mode conflict with ACME HTTP01 challenge pods
-      argo-cd: []
     breaking_changes:
-      - description: "Ambient mode promoted to GA; sidecar and ambient mode cannot coexist in the same namespace without explicit migration"
+      - description: "Delta xDS is on by default"
         type: behaviour_change
-      - description: "Kubernetes 1.26 support dropped"
+      - description: "Traces are no longer sent to zipkin.istio-system.svc by default"
         type: behaviour_change
-      - description: "All workload sidecars must be restarted after upgrade — required on every Istio minor version bump"
+      - description: >
+          ENHANCED_RESOURCE_SCOPING defaults to true: istiod processes only configuration within
+          meshConfig.discoverySelectors
         type: behaviour_change
-      - description: "istio-pilot Deployment and Service removed; replaced by istiod — any custom monitoring that targets pilot must be updated"
-        type: api_removal
+      - description: "ServiceEntry with resolution NONE respects targetPort"
+        type: behaviour_change
+      - description: "Ambient waypoints attach through the new namespace and service labels"
+        type: behaviour_change
     risk_level: high
     upgrade_notes: >
-      Requires Kubernetes >= 1.27. Plan sidecar rolling restart across ALL namespaces.
-      Ambient mode is now GA — namespaces labelled for ambient cannot simultaneously run
-      injected sidecars. Plan a phased migration per namespace if adopting ambient.
-      Remove any custom ServiceMonitor or PrometheusRule resources that target istio-pilot;
-      update to target istiod. Upgrade cert-manager to >= 1.14 before this Istio version.
+      `istioctl x precheck --from-version=1.21` detects the tracing change; compatibilityVersion=1.21
+      keeps the previous defaults. Set ISTIO_DELTA_XDS=false in proxies if delta xDS misbehaves.
+
+  - app_version: "1.23.0"
+    chart_version: "1.23.0"
+    source: "https://istio.io/latest/news/releases/1.23.x/announcing-1.23/upgrade-notes/"
+    min_kubernetes: "1.27"
+    breaking_changes:
+      - description: >
+          The Go and protobuf APIs keep one version per type (the oldest); Go clients of
+          istio.io/api or istio.io/client-go must update their imports
+        type: api_removal
+    risk_level: low
+    upgrade_notes: >
+      Kubernetes YAML is unaffected; only Go and protobuf consumers of the Istio APIs change.
+
+  - app_version: "1.24.0"
+    chart_version: "1.24.0"
+    source: "https://istio.io/latest/news/releases/1.24.x/announcing-1.24/upgrade-notes/"
+    min_kubernetes: "1.28"
+    breaking_changes:
+      - description: >
+          Istio CRDs are templated in the base chart and upgraded with `helm upgrade` of the base
+          release
+        type: crd_migration
+      - description: "The istiod-remote chart is replaced by the remote profile of the istiod chart"
+        type: config_change
+      - description: >
+          Sidecar resources resolve service conflicts the same way as having no Sidecar resource
+        type: behaviour_change
+      - description: >
+          Telemetry API CEL expressions must use standard Envoy attributes
+          (filter_state.downstream_peer, xds.node)
+        type: config_change
+      - description: >
+          Stricter gRPC ALPN validation breaks cert-manager's istio-csr up to v0.12.0
+        type: behaviour_change
+    risk_level: high
+    upgrade_notes: >
+      istio-csr users: run an istio-csr release with cert-manager/istio-csr#422, or set
+      GRPC_ENFORCE_ALPN_ENABLED: "false" in meshConfig.defaultConfig.proxyMetadata. Ambient mode with
+      DNS capture: upgrade istio-cni first, then restart the ambient workloads.
+
+  - app_version: "1.25.0"
+    chart_version: "1.25.0"
+    source: "https://istio.io/latest/news/releases/1.25.x/announcing-1.25/upgrade-notes/"
+    min_kubernetes: "1.29"
+    breaking_changes:
+      - description: "OpenCensus tracing is removed (Envoy dropped it); use OpenTelemetry"
+        type: api_removal
+      - description: "Ambient mode captures DNS by default (new pods)"
+        type: behaviour_change
+      - description: "DNS traffic respects the pod traffic exclusion annotations"
+        type: behaviour_change
+      - description: "ztunnel chart resources are named after .Resource.Name instead of ztunnel"
+        type: config_change
+    risk_level: medium
+    upgrade_notes: >
+      The bundled Grafana dashboards need Grafana 7.2 or later. Pods can opt out of ambient DNS
+      capture with ambient.istio.io/dns-capture=false.
+
+  - app_version: "1.26.0"
+    chart_version: "1.26.0"
+    source: "https://istio.io/latest/news/releases/1.26.x/announcing-1.26/upgrade-notes/"
+    min_kubernetes: "1.29"
+    breaking_changes:
+      - description: >
+          ztunnel chart resources are named ztunnel again by default (1.25 used .Resource.Name;
+          override with resourceName)
+        type: config_change
+    risk_level: low
+    upgrade_notes: >
+      The Lightstep and OpenCensus telemetry providers are deprecated and removed in 1.27; move to
+      the OpenTelemetry provider now.
+
+  - app_version: "1.27.0"
+    chart_version: "1.27.0"
+    source: "https://istio.io/latest/news/releases/1.27.x/announcing-1.27/upgrade-notes/"
+    min_kubernetes: "1.29"
+    breaking_changes:
+      - description: >
+          Native sidecars are on by default: istio-proxy runs as an init container in eligible pods
+        type: behaviour_change
+      - description: "The Lightstep and OpenCensus telemetry providers are removed"
+        type: api_removal
+      - description: "The bundled Grafana dashboards must be regenerated (explicit dashboard UIDs)"
+        type: config_change
+    risk_level: high
+    upgrade_notes: >
+      Test mutating webhooks and controllers that modify the istio-proxy container: it is no longer a
+      regular container.
+
+  - app_version: "1.28.0"
+    chart_version: "1.28.0"
+    source: "https://istio.io/latest/news/releases/1.28.x/announcing-1.28/upgrade-notes/"
+    min_kubernetes: "1.30"
+    breaking_changes:
+      - description: "InferencePool is v1 only; the alpha and release-candidate versions are removed"
+        type: api_removal
+      - description: "BackendTLSPolicy v1alpha3 is removed; only v1 is supported"
+        type: api_removal
+      - description: >
+          METRIC_ROTATION_INTERVAL and METRIC_GRACEFUL_DELETION_INTERVAL are removed; use the
+          sidecar.istio.io/statsEvictionInterval annotation
+        type: config_change
+    risk_level: medium
+    upgrade_notes: >
+      In ambient mode, old ztunnel images NACK the new PASSTHROUGH service type (ServiceEntries with
+      resolution NONE) until they are upgraded.
+
+  - app_version: "1.29.0"
+    chart_version: "1.29.0"
+    source: "https://istio.io/latest/news/releases/1.29.x/announcing-1.29/upgrade-notes/"
+    min_kubernetes: "1.31"
+    breaking_changes:
+      - description: >
+          Debug endpoint authorization is on: non-system namespaces get only config_dump, ndsz and
+          edsz for proxies in their own namespace
+        type: behaviour_change
+      - description: >
+          The Envoy metrics endpoint is compressed by default; the sidecar.istio.io/statsCompression
+          annotation is removed (proxyConfig.statsCompression)
+        type: config_change
+      - description: "Circuit breaker remaining metrics are no longer tracked by default"
+        type: behaviour_change
+      - description: "Configuration duplicated in the base chart is removed (the istiod chart owns it)"
+        type: config_change
+      - description: "Ambient DNS capture and iptables reconciliation are on by default"
+        type: behaviour_change
+    risk_level: medium
+    upgrade_notes: >
+      Kiali and other tools that read debug endpoints from outside istio-system can lose access;
+      ENABLE_DEBUG_ENDPOINT_AUTH=false restores it.
+
+  - app_version: "1.30.0"
+    chart_version: "1.30.0"
+    source: "https://istio.io/latest/news/releases/1.30.x/announcing-1.30/upgrade-notes/"
+    min_kubernetes: "1.32"
+    breaking_changes:
+      - description: >
+          Gateway API CRDs must be v1.5.x: istiod reads TLSRoute and ReferenceGrant from the v1
+          Standard channel, and older CRDs leave TLS passthrough listeners without routes
+        type: crd_migration
+      - description: "XDS debug endpoints on port 15010 require authentication"
+        type: behaviour_change
+      - description: >
+          The CNI agent respects excludeNamespaces: ambient pods in excluded namespaces are
+          un-enrolled
+        type: behaviour_change
+      - description: >
+          For a hostname in several namespaces, sidecars prefer the Kubernetes Service, then the
+          oldest other service
+        type: behaviour_change
+      - description: "CNI config files are written with 0600 permissions"
+        type: behaviour_change
+    risk_level: high
+    upgrade_notes: >
+      Install the Gateway API v1.5.x CRDs before upgrading
+      (`kubectl apply -k "github.com/kubernetes-sigs/gateway-api/config/crd?ref=v1.5.1"`).
+      istioctl --plaintext and custom plaintext XDS clients need ENABLE_DEBUG_ENDPOINT_AUTH=false.
+
+  - app_version: "1.31.0"
+    chart_version: "1.31.0"
+    source: "https://istio.io/latest/news/releases/1.31.x/announcing-1.31/upgrade-notes/"
+    min_kubernetes: "1.32"
+    breaking_changes:
+      - description: >
+          Artifacts are no longer published to gcr.io/istio-release, registry.istio.io or
+          istio-release.storage.googleapis.com: Helm charts move to
+          https://blob.istio.io/istio-release/charts (OCI: ghcr.io/istio/release/charts)
+        type: config_change
+      - description: >
+          Unhealthy endpoints are sent by default unless a Service sets
+          OutlierDetection.minHealthPercent (PILOT_AUTO_SEND_UNHEALTHY_ENDPOINTS)
+        type: behaviour_change
+      - description: >
+          Auto-registered WorkloadEntries need to re-register, or the networking.istio.io/tunnel=http
+          label, to be reached over HBONE
+        type: behaviour_change
+      - description: "PILOT_SPAWN_UPSTREAM_SPAN_FOR_GATEWAY is removed"
+        type: config_change
+    risk_level: high
+    upgrade_notes: >
+      Point Helm repositories, Flux HelmRepositories and Argo CD sources at
+      https://blob.istio.io/istio-release/charts: 1.31 charts are not in the old repository, and the
+      GCP-hosted artifacts go away after scream tests from September to December 2026. Images stay on
+      Docker Hub.

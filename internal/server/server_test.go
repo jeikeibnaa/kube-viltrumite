@@ -59,8 +59,8 @@ func TestHealth(t *testing.T) {
 	if resp.Status != "ok" {
 		t.Errorf("status: got %q, want %q", resp.Status, "ok")
 	}
-	if resp.Version != "0.1.0" {
-		t.Errorf("version: got %q, want %q", resp.Version, "0.1.0")
+	if resp.Version != "0.2.0" {
+		t.Errorf("version: got %q, want %q", resp.Version, "0.2.0")
 	}
 }
 

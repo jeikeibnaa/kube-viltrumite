@@ -73,7 +73,7 @@ spec:
 |---|---|
 | CRDs, reconcilers, pull + push model | ✅ Working |
 | Detection: Helm, Flux `HelmRelease` (v2), Argo CD `Application` (multi-source), raw `kubectl apply` installs | ✅ Working: canonical tool names and app versions, one record per tool (GitOps over Helm over raw) |
-| Compatibility knowledge base (6 tools) | 🟡 Schema v2 (app/chart versions, aliases, release-notes links, validated on load); data verified and refreshed in v0.2.0 |
+| Compatibility knowledge base (6 tools) | ✅ Verified against upstream (2026-09-30): one entry per minor up to cert-manager 1.21, Argo CD 3.5, Istio 1.31, External Secrets 2.11, Prometheus Operator 0.94, Vault 2.0; release-notes links; validated on load |
 | Upgrade execution (Helm SDK, atomic rollback) | 🔴 Experimental, reworked in v0.3.0 |
 | Cross-tool ordering and multi-step plans | 🔴 Planned for v0.4.0 |
 | Dashboard | 🟡 Upgrade list + approve; full dashboard in v0.5.0 |

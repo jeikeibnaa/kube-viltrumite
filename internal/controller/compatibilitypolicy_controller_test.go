@@ -112,6 +112,27 @@ func TestResolveInstalled(t *testing.T) {
 			wantUnknown: []string{"base"},
 		},
 		{
+			// As seen on kind in S26: Istio 1.30 deployed by two Argo CD
+			// Applications from blob.istio.io. The 1.30 chart runs
+			// registry.istio.io/release/pilot, and 1.30.5 is no knowledge-base
+			// chart version, so only istiod's image gives the version.
+			name: "Argo CD: istio base and istiod, the version from istiod's 1.30 image",
+			found: []scanner.InstalledTool{
+				{
+					Name: "istio-base", ChartName: "base", ChartVersion: "1.30.5", Source: "argocd",
+					ChartOrigins: []string{"https://blob.istio.io/istio-release/charts"},
+				},
+				{
+					Name: "istiod", ChartName: "istiod", ChartVersion: "1.30.5", Source: "argocd",
+					ChartOrigins: []string{"https://blob.istio.io/istio-release/charts"},
+					Images:       []string{"registry.istio.io/release/pilot:1.30.5"},
+				},
+			},
+			wantTool:    "istio",
+			wantSource:  "argocd",
+			wantVersion: "1.30.5",
+		},
+		{
 			name: "Helm beats a raw detection of the same tool",
 			found: []scanner.InstalledTool{
 				{Name: "cert-manager", CurrentVersion: "v1.14.0", Source: "raw"},
@@ -357,26 +378,28 @@ func TestPolicyReconcile_DiscoveryReport(t *testing.T) {
 			"external-secrets": {helmRelease("external-secrets-external-secrets", "external-secrets", "external-secrets", "0.9.5", "v0.9.5")},
 			// A chart named like Istio's base chart that does not come from Istio.
 			"istio-system": {helmRelease("base", "istio-system", "base", "0.3.0", "0.3.0", "https://charts.example.com")},
-			"vault":        {helmRelease("vault", "vault", "vault", "0.28.0", "1.16.1", "https://www.vaultproject.io")},
+			// The newest vault chart: up to date.
+			"vault": {helmRelease("vault", "vault", "vault", "0.34.1", "2.0.4", "https://www.vaultproject.io")},
 		},
 	}
 	r := newPolicyReconciler(t, policy, cluster, interceptor.Funcs{})
 
 	res, got := reconcilePolicy(t, r, policy)
 
-	// riskTolerance is unset, so HIGH: cert-manager's HIGH-risk 1.15.0 is recommended.
+	// riskTolerance is unset, so HIGH: each tool is offered its newest
+	// knowledge-base entry, with that entry's own risk.
 	want := kubeviltrumitev1alpha1.CompatibilityPolicyStatus{
 		Mode: "discovery",
 		Tools: []kubeviltrumitev1alpha1.TrackedToolStatus{
 			{Name: "argo-cd", Installed: true, Source: "argocd", Namespace: "argocd", Message: "installed version unknown"},
 			{Name: "cert-manager", Installed: true, InstalledVersion: "v1.14.0", Source: "raw", Namespace: "cert-manager",
-				UpgradeAvailable: true, RecommendedVersion: "1.15.0", Risk: ai.RiskHigh, Message: "upgrade available"},
+				UpgradeAvailable: true, RecommendedVersion: "1.21.0", Risk: ai.RiskMedium, Message: "upgrade available"},
 			{Name: "external-secrets", Installed: true, InstalledVersion: "v0.9.5", Source: "fluxcd", Namespace: "external-secrets",
-				UpgradeAvailable: true, RecommendedVersion: "0.10.5", Risk: ai.RiskLow, Message: "upgrade available"},
+				UpgradeAvailable: true, RecommendedVersion: "2.11.0", Risk: ai.RiskLow, Message: "upgrade available"},
 			{Name: "istio", Message: "not currently installed in cluster"},
 			{Name: "prometheus-stack", Installed: true, InstalledVersion: "latest", Source: "raw", Namespace: "monitoring",
 				Message: `installed version "latest" not recognised`},
-			{Name: "vault", Installed: true, InstalledVersion: "1.16.1", Source: "helm", Namespace: "vault", Message: "up to date"},
+			{Name: "vault", Installed: true, InstalledVersion: "2.0.4", Source: "helm", Namespace: "vault", Message: "up to date"},
 		},
 		UnknownInstalled: []string{"base", "velero"},
 	}
@@ -491,7 +514,7 @@ func TestPolicyReconcile_ToolStatus(t *testing.T) {
 			}},
 			want: kubeviltrumitev1alpha1.TrackedToolStatus{
 				Name: "prometheus-stack", Installed: true, InstalledVersion: "v0.66.0", Source: "helm", Namespace: "monitoring",
-				UpgradeAvailable: true, RecommendedVersion: "0.76.0", Risk: ai.RiskMedium, Message: "upgrade available",
+				UpgradeAvailable: true, RecommendedVersion: "0.94.0", Risk: ai.RiskMedium, Message: "upgrade available",
 			},
 		},
 		{
@@ -505,7 +528,7 @@ func TestPolicyReconcile_ToolStatus(t *testing.T) {
 			},
 			want: kubeviltrumitev1alpha1.TrackedToolStatus{
 				Name: "cert-manager", Installed: true, InstalledVersion: "v1.14.0", Source: "helm", Namespace: "cert-manager",
-				UpgradeAvailable: true, RecommendedVersion: "1.15.0", Risk: ai.RiskHigh, Message: "upgrade available",
+				UpgradeAvailable: true, RecommendedVersion: "1.21.0", Risk: ai.RiskMedium, Message: "upgrade available",
 			},
 		},
 		{
@@ -516,7 +539,7 @@ func TestPolicyReconcile_ToolStatus(t *testing.T) {
 			}},
 			want: kubeviltrumitev1alpha1.TrackedToolStatus{
 				Name: "argo-cd", Installed: true, InstalledVersion: "v2.8.4", Source: "argocd", Namespace: "argocd",
-				UpgradeAvailable: true, RecommendedVersion: "2.12.0", Risk: ai.RiskMedium, Message: "upgrade available",
+				UpgradeAvailable: true, RecommendedVersion: "3.5.0", Risk: ai.RiskMedium, Message: "upgrade available",
 			},
 		},
 		{
@@ -525,7 +548,7 @@ func TestPolicyReconcile_ToolStatus(t *testing.T) {
 			cluster: testCluster{objects: []client.Object{argoApplication("vault", "vault", "vault", "0.25.0")}},
 			want: kubeviltrumitev1alpha1.TrackedToolStatus{
 				Name: "vault", Installed: true, InstalledVersion: "1.14.0", Source: "argocd", Namespace: "vault",
-				UpgradeAvailable: true, RecommendedVersion: "1.16.1", Risk: ai.RiskMedium, Message: "upgrade available",
+				UpgradeAvailable: true, RecommendedVersion: "2.0.4", Risk: ai.RiskLow, Message: "upgrade available",
 			},
 		},
 		{
@@ -536,7 +559,7 @@ func TestPolicyReconcile_ToolStatus(t *testing.T) {
 			}},
 			want: kubeviltrumitev1alpha1.TrackedToolStatus{
 				Name: "istio", Installed: true, InstalledVersion: "1.21.0", Source: "helm", Namespace: "istio-system",
-				UpgradeAvailable: true, RecommendedVersion: "1.22.0", Risk: ai.RiskHigh, Message: "upgrade available",
+				UpgradeAvailable: true, RecommendedVersion: "1.31.0", Risk: ai.RiskHigh, Message: "upgrade available",
 			},
 		},
 		{
@@ -574,7 +597,8 @@ func TestPolicyReconcile_ToolStatus(t *testing.T) {
 
 // TestPolicyReconcile_RiskTolerance checks that the recommendation is the
 // newest version at or below riskTolerance, and that an unset tolerance means
-// HIGH. cert-manager's knowledge base: 1.13.0 and 1.14.0 LOW, 1.15.0 HIGH.
+// HIGH. Istio's knowledge base above 1.25: 1.26.0 LOW, 1.27.0 HIGH, 1.28.0 and
+// 1.29.0 MEDIUM, 1.30.0 and 1.31.0 HIGH.
 func TestPolicyReconcile_RiskTolerance(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -584,28 +608,28 @@ func TestPolicyReconcile_RiskTolerance(t *testing.T) {
 		wantRisk    ai.RiskLevel
 		wantMessage string
 	}{
-		{"unset means HIGH", "", "v1.12.0", "1.15.0", ai.RiskHigh, "upgrade available"},
-		{"LOW", ai.RiskLow, "v1.12.0", "1.14.0", ai.RiskLow, "upgrade available"},
-		{"MEDIUM", ai.RiskMedium, "v1.12.0", "1.14.0", ai.RiskLow, "upgrade available"},
-		{"HIGH", ai.RiskHigh, "v1.12.0", "1.15.0", ai.RiskHigh, "upgrade available"},
-		{"the only newer version is riskier than the tolerance", ai.RiskLow, "v1.14.0", "", "", "up to date"},
+		{"unset means HIGH", "", "1.25.0", "1.31.0", ai.RiskHigh, "upgrade available"},
+		{"LOW", ai.RiskLow, "1.25.0", "1.26.0", ai.RiskLow, "upgrade available"},
+		{"MEDIUM", ai.RiskMedium, "1.25.0", "1.29.0", ai.RiskMedium, "upgrade available"},
+		{"HIGH", ai.RiskHigh, "1.25.0", "1.31.0", ai.RiskHigh, "upgrade available"},
+		{"the only newer versions are riskier than the tolerance", ai.RiskMedium, "1.30.0", "", "", "up to date"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			policy := newPolicy(kubeviltrumitev1alpha1.CompatibilityPolicySpec{
 				WatchNamespaces: watchAll,
-				TrackedTools:    []string{"cert-manager"},
+				TrackedTools:    []string{"istio"},
 				RiskTolerance:   tc.tolerance,
 			})
 			cluster := testCluster{objects: []client.Object{
-				rawDeployment("cert-manager", "cert-manager", "quay.io/jetstack/cert-manager-controller:"+tc.installed),
+				rawDeployment("istiod", "istio-system", "docker.io/istio/pilot:"+tc.installed),
 			}}
 			r := newPolicyReconciler(t, policy, cluster, interceptor.Funcs{})
 
 			_, got := reconcilePolicy(t, r, policy)
 
 			if len(got.Status.Tools) != 1 {
-				t.Fatalf("tools = %+v, want cert-manager only", got.Status.Tools)
+				t.Fatalf("tools = %+v, want istio only", got.Status.Tools)
 			}
 			ts := got.Status.Tools[0]
 			if ts.RecommendedVersion != tc.wantVersion || ts.Risk != tc.wantRisk || ts.Message != tc.wantMessage ||
@@ -621,10 +645,12 @@ func TestPolicyReconcile_RiskTolerance(t *testing.T) {
 // level when riskTolerance is unset (HIGH): see autoplanPlans.
 func autoplanCluster() testCluster {
 	return testCluster{
-		objects: []client.Object{rawDeployment("cert-manager", "cert-manager", "quay.io/jetstack/cert-manager-controller:v1.12.0")},
+		objects: []client.Object{
+			rawDeployment("cert-manager", "cert-manager", "quay.io/jetstack/cert-manager-controller:v1.12.0"),
+			rawDeployment("istiod", "istio-system", "docker.io/istio/pilot:1.25.0"),
+		},
 		helm: map[string][]*release.Release{
 			"external-secrets": {helmRelease("external-secrets", "external-secrets", "external-secrets", "0.9.5", "v0.9.5")},
-			"vault":            {helmRelease("vault", "vault", "vault", "0.25.0", "1.14.0")},
 		},
 	}
 }
@@ -632,9 +658,9 @@ func autoplanCluster() testCluster {
 // autoplanPlans are the StackUpgrades autoplan may create over
 // autoplanCluster, by name.
 var autoplanPlans = map[string]kubeviltrumitev1alpha1.ToolUpgradeSpec{
-	"auto-cert-manager-1.15.0":     {Name: "cert-manager", CurrentVersion: "v1.12.0", TargetVersion: "1.15.0", Risk: ai.RiskHigh},
-	"auto-external-secrets-0.10.5": {Name: "external-secrets", CurrentVersion: "v0.9.5", TargetVersion: "0.10.5", Risk: ai.RiskLow},
-	"auto-vault-1.16.1":            {Name: "vault", CurrentVersion: "1.14.0", TargetVersion: "1.16.1", Risk: ai.RiskMedium},
+	"auto-cert-manager-1.21.0":     {Name: "cert-manager", CurrentVersion: "v1.12.0", TargetVersion: "1.21.0", Risk: ai.RiskMedium},
+	"auto-external-secrets-2.11.0": {Name: "external-secrets", CurrentVersion: "v0.9.5", TargetVersion: "2.11.0", Risk: ai.RiskLow},
+	"auto-istio-1.31.0":            {Name: "istio", CurrentVersion: "1.25.0", TargetVersion: "1.31.0", Risk: ai.RiskHigh},
 }
 
 // listUpgrades returns the StackUpgrades opts select, sorted by name.
@@ -667,22 +693,22 @@ func TestPolicyReconcile_Autoplan(t *testing.T) {
 		{
 			name:      "maxRisk unset means LOW",
 			autoplan:  &kubeviltrumitev1alpha1.AutoplanConfig{Enabled: true},
-			wantPlans: []string{"auto-external-secrets-0.10.5"},
+			wantPlans: []string{"auto-external-secrets-2.11.0"},
 		},
 		{
 			name:      "maxRisk MEDIUM",
 			autoplan:  &kubeviltrumitev1alpha1.AutoplanConfig{Enabled: true, MaxRisk: ai.RiskMedium},
-			wantPlans: []string{"auto-external-secrets-0.10.5", "auto-vault-1.16.1"},
+			wantPlans: []string{"auto-cert-manager-1.21.0", "auto-external-secrets-2.11.0"},
 		},
 		{
 			name:      "maxRisk HIGH",
 			autoplan:  &kubeviltrumitev1alpha1.AutoplanConfig{Enabled: true, MaxRisk: ai.RiskHigh},
-			wantPlans: []string{"auto-cert-manager-1.15.0", "auto-external-secrets-0.10.5", "auto-vault-1.16.1"},
+			wantPlans: []string{"auto-cert-manager-1.21.0", "auto-external-secrets-2.11.0", "auto-istio-1.31.0"},
 		},
 		{
 			name:      "autoApprove creates the plan Approved",
 			autoplan:  &kubeviltrumitev1alpha1.AutoplanConfig{Enabled: true, MaxRisk: ai.RiskLow, AutoApprove: true},
-			wantPlans: []string{"auto-external-secrets-0.10.5"},
+			wantPlans: []string{"auto-external-secrets-2.11.0"},
 		},
 	}
 	for _, tc := range tests {
@@ -727,9 +753,9 @@ func TestPolicyReconcile_Autoplan(t *testing.T) {
 func TestPolicyReconcile_AutoplanIdempotent(t *testing.T) {
 	// A plan an earlier scan created, since carried out.
 	done := &kubeviltrumitev1alpha1.StackUpgrade{
-		ObjectMeta: metav1.ObjectMeta{Name: "auto-external-secrets-0.10.5", Namespace: policyNamespace},
+		ObjectMeta: metav1.ObjectMeta{Name: "auto-external-secrets-2.11.0", Namespace: policyNamespace},
 		Spec: kubeviltrumitev1alpha1.StackUpgradeSpec{Tools: []kubeviltrumitev1alpha1.ToolUpgradeSpec{
-			{Name: "external-secrets", CurrentVersion: "v0.9.0", TargetVersion: "0.10.5", Risk: ai.RiskLow},
+			{Name: "external-secrets", CurrentVersion: "v0.9.0", TargetVersion: "2.11.0", Risk: ai.RiskLow},
 		}},
 		Status: kubeviltrumitev1alpha1.StackUpgradeStatus{Phase: kubeviltrumitev1alpha1.UpgradePhaseSucceeded},
 	}
@@ -755,7 +781,7 @@ func TestPolicyReconcile_AutoplanIdempotent(t *testing.T) {
 	reconcilePolicy(t, r, policy)
 	reconcilePolicy(t, r, policy)
 
-	if want := []string{"auto-cert-manager-1.15.0", "auto-vault-1.16.1"}; !slices.Equal(created, want) {
+	if want := []string{"auto-cert-manager-1.21.0", "auto-istio-1.31.0"}; !slices.Equal(created, want) {
 		t.Errorf("created %v over two scans, want %v", created, want)
 	}
 	if n := len(listUpgrades(t, r.Client)); n != 3 {
@@ -826,7 +852,7 @@ func TestPolicyReconcile_WorkloadScanFails(t *testing.T) {
 	policy := newPolicy(kubeviltrumitev1alpha1.CompatibilityPolicySpec{WatchNamespaces: watchAll, TrackedTools: []string{"cert-manager", "vault"}})
 	cluster := testCluster{
 		objects: []client.Object{rawDeployment("cert-manager", "cert-manager", "quay.io/jetstack/cert-manager-controller:v1.14.0")},
-		helm:    map[string][]*release.Release{"vault": {helmRelease("vault", "vault", "vault", "0.28.0", "1.16.1")}},
+		helm:    map[string][]*release.Release{"vault": {helmRelease("vault", "vault", "vault", "0.34.1", "2.0.4")}},
 	}
 	r := newPolicyReconciler(t, policy, cluster, interceptor.Funcs{
 		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
@@ -843,7 +869,7 @@ func TestPolicyReconcile_WorkloadScanFails(t *testing.T) {
 	// operator log says the scan failed.
 	want := []kubeviltrumitev1alpha1.TrackedToolStatus{
 		{Name: "cert-manager", Message: "not currently installed in cluster"},
-		{Name: "vault", Installed: true, InstalledVersion: "1.16.1", Source: "helm", Namespace: "vault", Message: "up to date"},
+		{Name: "vault", Installed: true, InstalledVersion: "2.0.4", Source: "helm", Namespace: "vault", Message: "up to date"},
 	}
 	if !reflect.DeepEqual(got.Status.Tools, want) {
 		t.Errorf("tools:\n got %+v\nwant %+v", got.Status.Tools, want)
@@ -1042,14 +1068,14 @@ func TestEnvtestStatusSubresource(t *testing.T) {
 func TestEnvtestPolicyReconcile(t *testing.T) {
 	c := envtestClient(t)
 	ns := envtestNamespace(t, c)
-	if err := c.Create(context.Background(), rawDeployment("cert-manager", ns, "quay.io/jetstack/cert-manager-controller:v1.12.0")); err != nil {
+	if err := c.Create(context.Background(), rawDeployment("external-secrets", ns, "ghcr.io/external-secrets/external-secrets:v0.9.5")); err != nil {
 		t.Fatalf("create Deployment: %v", err)
 	}
 	policy := &kubeviltrumitev1alpha1.CompatibilityPolicy{
 		ObjectMeta: metav1.ObjectMeta{Name: "platform", Namespace: ns},
 		Spec: kubeviltrumitev1alpha1.CompatibilityPolicySpec{
 			WatchNamespaces: []string{ns},
-			TrackedTools:    []string{"cert-manager", "vault"},
+			TrackedTools:    []string{"external-secrets", "vault"},
 			RiskTolerance:   ai.RiskLow,
 			// maxRisk comes from the CRD default, LOW.
 			Autoplan: &kubeviltrumitev1alpha1.AutoplanConfig{Enabled: true, AutoApprove: true},
@@ -1061,12 +1087,12 @@ func TestEnvtestPolicyReconcile(t *testing.T) {
 	r := policyReconcilerFor(t, c, nil)
 
 	wantTools := []kubeviltrumitev1alpha1.TrackedToolStatus{
-		{Name: "cert-manager", Installed: true, InstalledVersion: "v1.12.0", Source: "raw", Namespace: ns,
-			UpgradeAvailable: true, RecommendedVersion: "1.14.0", Risk: ai.RiskLow, Message: "upgrade available"},
+		{Name: "external-secrets", Installed: true, InstalledVersion: "v0.9.5", Source: "raw", Namespace: ns,
+			UpgradeAvailable: true, RecommendedVersion: "2.11.0", Risk: ai.RiskLow, Message: "upgrade available"},
 		{Name: "vault", Message: "not currently installed in cluster"},
 	}
 	wantPlan := []kubeviltrumitev1alpha1.ToolUpgradeSpec{
-		{Name: "cert-manager", CurrentVersion: "v1.12.0", TargetVersion: "1.14.0", Risk: ai.RiskLow},
+		{Name: "external-secrets", CurrentVersion: "v0.9.5", TargetVersion: "2.11.0", Risk: ai.RiskLow},
 	}
 	var planVersion string
 	for scan := 1; scan <= 2; scan++ {
@@ -1093,8 +1119,8 @@ func TestEnvtestPolicyReconcile(t *testing.T) {
 		}
 
 		plans := listUpgrades(t, c, client.InNamespace(ns))
-		if len(plans) != 1 || plans[0].Name != "auto-cert-manager-1.14.0" {
-			t.Fatalf("scan %d: plans %+v, want auto-cert-manager-1.14.0 only", scan, plans)
+		if len(plans) != 1 || plans[0].Name != "auto-external-secrets-2.11.0" {
+			t.Fatalf("scan %d: plans %+v, want auto-external-secrets-2.11.0 only", scan, plans)
 		}
 		plan := plans[0]
 		if !reflect.DeepEqual(plan.Spec.Tools, wantPlan) || plan.Spec.ApprovalRequired ||

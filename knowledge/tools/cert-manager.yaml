@@ -16,18 +16,29 @@
 #       version_from: string     — image_tag | label (app.kubernetes.io/version)
 #     labels: {string: string}
 #   versions[]:                  — ascending by app_version, no duplicates
-#     app_version: string        — upstream app version, full semver without "v" ("1.14.0").
+#     app_version: string        — upstream app version, full semver without "v" ("1.14.0"): the minor's
+#                                  first release, or the patch upstream says to install instead.
 #                                  The entry also covers later patches of its minor, up to the next entry.
 #     chart_version: string      — Helm chart version that ships app_version, as published; ascending
-#     source: string             — release-notes URL for this version
-#     min_kubernetes: string     — earliest Kubernetes minor this version supports
-#     incompatible_with:         — optional; tool name or alias → app versions of that tool
-#       <tool>: [string]           known to break with this version
-#     breaking_changes[]:        — may be empty
+#     source: string             — upstream release notes or upgrade guide the entry is based on
+#     min_kubernetes: string     — earliest Kubernetes minor upstream supports or tests this version on,
+#                                  never below the Helm chart's kubeVersion floor
+#     incompatible_with:         — optional; tool name or alias → app versions of that tool known to
+#       <tool>: [string]           break with this version, only with an upstream source
+#     breaking_changes[]:        — changes since the previous entry that need attention; may be empty
 #       description: string      — human-readable summary
 #       type: string             — api_removal | crd_migration | config_change | behaviour_change
-#     risk_level: string         — low | medium | high | blocking: risk of upgrading to this version
+#     risk_level: string         — risk of upgrading to this version: low (nothing to do for a default
+#                                  install) | medium (a documented step or config review for some
+#                                  installs) | high (running workloads, traffic, keys or stored objects
+#                                  break if the steps are missed) | blocking (do not install)
 #     upgrade_notes: string      — operator guidance for the upgrade from the previous entry
+#
+# One entry per cert-manager minor, verified 2026-09-30 against the release notes and upgrade guides
+# (https://cert-manager.io/docs/releases/) and the chart index https://charts.jetstack.io.
+# min_kubernetes is the lower bound of the supported Kubernetes range on the supported-releases page;
+# the chart's kubeVersion has been ">= 1.22.0-0" since v1.12. Upstream advises upgrading one minor
+# at a time (1.12 LTS users may go straight to the latest 1.17 patch).
 
 tool: cert-manager
 
@@ -44,79 +55,211 @@ detection:
 versions:
   - app_version: "1.12.0"
     chart_version: "v1.12.0"
-    source: "https://github.com/cert-manager/cert-manager/releases/tag/v1.12.0"
+    source: "https://cert-manager.io/docs/releases/release-notes/release-notes-1.12/"
     min_kubernetes: "1.22"
-    incompatible_with:
-      external-secrets: []
     breaking_changes:
-      - description: "cert-manager.io/v1alpha2 and v1alpha3 API versions removed from CRDs"
-        type: api_removal
-      - description: "cmctl CLI flag --kubeconfig-context renamed to --context"
+      - description: >
+          ACME Challenge names are calculated differently; a Challenge in progress during the
+          upgrade can be recreated and its certificate issued twice
+        type: behaviour_change
+      - description: >
+          cainjector no longer starts without the certificates.cert-manager.io CRD unless it runs
+          with --watch-certificates=false; its --watch-certs flag is renamed
+          --enable-certificates-data-source
         type: config_change
     risk_level: medium
     upgrade_notes: >
-      Run `cmctl upgrade migrate-api-version` before upgrading from 1.11 to convert
-      any remaining v1alpha2/v1alpha3 resources to v1. Validate webhook connectivity
-      with ingress-nginx >= 1.4.0.
+      Upstream's 1.11 → 1.12 guide lists no breaking changes for a default install; the release
+      notes flag the two above as potentially breaking. Let in-progress ACME orders finish before
+      upgrading. 1.12 was a long-term-support release (end of life May 2025): run its latest patch
+      (1.12.17) before moving on, or some certificates may be re-issued.
 
   - app_version: "1.13.0"
     chart_version: "v1.13.0"
-    source: "https://github.com/cert-manager/cert-manager/releases/tag/v1.13.0"
-    min_kubernetes: "1.23"
-    incompatible_with:
-      external-secrets:
-        - "0.7.0"   # ESO ClusterSecretStore CRD field conflict introduced in this release
-        - "0.7.1"
+    source: "https://cert-manager.io/docs/releases/release-notes/release-notes-1.13/"
+    min_kubernetes: "1.22"
     breaking_changes:
-      - description: "Kubernetes 1.22 support dropped"
+      - description: >
+          The Helm value featureGates no longer reaches the webhook; set webhook.featureGates for
+          webhook feature gates
+        type: config_change
+      - description: >
+          Webhook validation of CertificateRequests is stricter: every key usage and extended key
+          usage must be set on the resource, and the CSR may not request more
         type: behaviour_change
-      - description: "Removed --acme-http01-solver-nameservers flag (use --dns01-recursive-nameservers)"
-        type: config_change
-    risk_level: low
+    risk_level: medium
     upgrade_notes: >
-      Verify cluster is running Kubernetes >= 1.23 before upgrading.
-      Replace --acme-http01-solver-nameservers in operator args with
-      --dns01-recursive-nameservers if present. Avoid ingress-nginx 1.4.0, which has an
-      IngressClass race condition with the cert-manager challenge solver.
+      Upgrade to the latest 1.12 patch first. Move webhook feature gates from featureGates to
+      webhook.featureGates. Tools that create CertificateRequests directly must list every usage
+      their CSR requests. Supported Kubernetes is 1.21–1.27, but the chart requires 1.22.
 
-  - app_version: "1.14.0"
-    chart_version: "v1.14.0"
-    source: "https://github.com/cert-manager/cert-manager/releases/tag/v1.14.0"
-    min_kubernetes: "1.23"
-    incompatible_with:
-      external-secrets:
-        - "0.8.0"   # ExternalSecret status condition schema changed; causes watch errors
+  - app_version: "1.14.2"
+    chart_version: "v1.14.2"
+    source: "https://cert-manager.io/docs/releases/release-notes/release-notes-1.14/"
+    min_kubernetes: "1.24"
     breaking_changes:
-      - description: "Gateway API v1 (stable) required; experimental v1alpha2 route support removed"
-        type: api_removal
-      - description: "Certificate additionalOutputFormats field promoted to GA; alpha gate removed"
+      - description: >
+          The startupapicheck Job runs a new startupapicheck image instead of the ctl image
         type: config_change
-    risk_level: low
+      - description: >
+          KeyUsage and BasicConstraints extensions are encoded as critical in the CSR of a
+          CertificateRequest
+        type: behaviour_change
+    risk_level: medium
     upgrade_notes: >
-      If using Gateway API, upgrade gateway-api CRDs to v1.0+ before this cert-manager version.
-      The feature gate --enable-gateway-api is now on by default; remove it from operator args
-      to avoid deprecation warnings.
+      Install 1.14.2 or later, not 1.14.0 (its chart pointed cainjector at the wrong image) or
+      1.14.1 (the CA and SelfSigned issuers copied the CSR's critical flag). Mirror the new
+      startupapicheck image if images come from a private registry. cmctl is no longer released
+      with cert-manager.
 
   - app_version: "1.15.0"
     chart_version: "v1.15.0"
-    source: "https://github.com/cert-manager/cert-manager/releases/tag/v1.15.0"
+    source: "https://cert-manager.io/docs/releases/release-notes/release-notes-1.15/"
     min_kubernetes: "1.25"
-    incompatible_with:
-      external-secrets:
-        - "0.9.0"   # PushSecret webhook validation rejects cert-manager-owned secrets
-        - "0.9.1"
     breaking_changes:
-      - description: "Kubernetes 1.23 and 1.24 support dropped"
+      - description: >
+          Gateway API support is beta: the ExperimentalGatewayAPISupport feature gate is on by
+          default, and the controller needs --enable-gateway-api to use Gateway API
+        type: config_change
+      - description: "Uninstalling the Helm chart keeps the CRDs by default"
         type: behaviour_change
-      - description: "Removed long-deprecated --controllers flag; use --enable-certificate-owner-ref"
+      - description: >
+          ACME issuers with preferredChain now get the chain they asked for, which can differ from
+          the chain issued before
+        type: behaviour_change
+    risk_level: medium
+    upgrade_notes: >
+      If you enabled ExperimentalGatewayAPISupport, pass --enable-gateway-api instead. Kubernetes
+      1.25 is the new minimum.
+
+  - app_version: "1.16.0"
+    chart_version: "v1.16.0"
+    source: "https://cert-manager.io/docs/releases/release-notes/release-notes-1.16/"
+    min_kubernetes: "1.25"
+    breaking_changes:
+      - description: >
+          The Helm chart validates values against a JSON schema; typos and unknown fields in a values
+          file fail the install or upgrade
         type: config_change
       - description: >
-          CertificateRequest.spec.duration field now strictly validated;
-          values below 1h are rejected
+          Venafi issuer renewals can fail when the requested duration conflicts with the Venafi
+          policy's minimum or maximum
         type: behaviour_change
+      - description: >
+          The Venafi issuer authenticates to TPP with OAuth instead of API keys when configured with
+          a username and password
+        type: config_change
+    risk_level: medium
+    upgrade_notes: >
+      Render your values with `helm template` against the 1.16 chart before upgrading to catch
+      schema errors. Venafi TPP users: enable OAuth for cert-manager's TPP account first.
+      OperatorHub packages are no longer published (the last one is 1.16.5).
+
+  - app_version: "1.17.0"
+    chart_version: "v1.17.0"
+    source: "https://cert-manager.io/docs/releases/release-notes/release-notes-1.17/"
+    min_kubernetes: "1.29"
+    breaking_changes:
+      - description: >
+          The CA and SelfSigned issuers sign with SHA-384 for RSA keys of 3072 bits and SHA-512 for
+          4096 bits, instead of SHA-256
+        type: behaviour_change
+      - description: "Unstructured log lines are replaced by structured logs"
+        type: behaviour_change
+      - description: "The ValidateCAA feature gate is deprecated (removed in 1.18)"
+        type: config_change
+    risk_level: medium
+    upgrade_notes: >
+      Check that clients accept SHA-384/SHA-512 signatures if a 3072- or 4096-bit RSA CA issues
+      through cert-manager. Update log-based alerts that match literal strings. Stop setting
+      ValidateCAA. Kubernetes 1.29 is the new minimum.
+
+  - app_version: "1.18.0"
+    chart_version: "v1.18.0"
+    source: "https://cert-manager.io/docs/releases/release-notes/release-notes-1.18/"
+    min_kubernetes: "1.29"
+    breaking_changes:
+      - description: >
+          Certificate spec.privateKey.rotationPolicy defaults to Always instead of Never: every
+          renewal generates a new private key
+        type: behaviour_change
+      - description: >
+          Certificate spec.revisionHistoryLimit defaults to 1: older CertificateRequests are
+          garbage-collected
+        type: behaviour_change
+      - description: >
+          ACME HTTP-01 solver Ingresses use pathType Exact, which ingress-nginx rejects when
+          strict-validate-path-type is on (the default from 1.12.0, fixed in 1.12.6 and 1.13.2) and
+          which OpenShift's router does not support
+        type: behaviour_change
+      - description: "The ValidateCAA feature gate is removed; setting it only logs a warning"
+        type: config_change
     risk_level: high
     upgrade_notes: >
-      Requires Kubernetes >= 1.25. Audit all CertificateRequests for sub-1h duration values
-      before upgrading — invalid resources will be rejected and may block issuance.
-      Remove --controllers from operator Deployment args if present.
-      Upgrade ingress-nginx to >= 1.10.0 and external-secrets to >= 0.9.2 first.
+      Set rotationPolicy: Never explicitly on Certificates whose key must not change before
+      upgrading. If HTTP-01 challenges go through ingress-nginx, upgrade it to 1.12.6 or 1.13.2+,
+      turn off its strict-validate-path-type, or set cert-manager's ACMEHTTP01IngressPathTypeExact
+      feature gate to false. ingress-nginx itself was retired upstream in March 2026.
+
+  - app_version: "1.19.1"
+    chart_version: "v1.19.1"
+    source: "https://cert-manager.io/docs/releases/release-notes/release-notes-1.19/"
+    min_kubernetes: "1.31"
+    breaking_changes:
+      - description: >
+          The ACME client metrics certmanager_acme_client_request_count and
+          certmanager_acme_client_request_duration_seconds replace the path label with a bounded
+          action label
+        type: behaviour_change
+      - description: >
+          From 1.19.6, the cert-manager-edit ClusterRole no longer grants create on Challenges or
+          create, patch and update on Orders (GHSA-8rvj-mm4h-c258)
+        type: behaviour_change
+    risk_level: medium
+    upgrade_notes: >
+      Install 1.19.1 or later: 1.19.0 can re-issue certificates unnecessarily. Update dashboards
+      and alerts that use the path label. Grant Challenge and Order permissions explicitly to
+      tooling that creates them directly.
+
+  - app_version: "1.20.0"
+    chart_version: "v1.20.0"
+    source: "https://cert-manager.io/docs/releases/release-notes/release-notes-1.20/"
+    min_kubernetes: "1.32"
+    breaking_changes:
+      - description: >
+          The DefaultPrivateKeyRotationPolicyAlways feature gate is GA and can no longer be turned
+          off
+        type: config_change
+      - description: >
+          From 1.20.3, the cert-manager-edit ClusterRole no longer grants create on Challenges or
+          create, patch and update on Orders (GHSA-8rvj-mm4h-c258)
+        type: behaviour_change
+    risk_level: medium
+    upgrade_notes: >
+      If you turned off DefaultPrivateKeyRotationPolicyAlways to keep the old default, set
+      rotationPolicy: Never on the Certificates that need it before upgrading.
+
+  - app_version: "1.21.0"
+    chart_version: "v1.21.0"
+    source: "https://cert-manager.io/docs/releases/release-notes/release-notes-1.21/"
+    min_kubernetes: "1.33"
+    breaking_changes:
+      - description: >
+          The Helm chart no longer creates the Role and RoleBinding that let the controller create
+          tokens for its own ServiceAccount (serviceaccounts/token)
+        type: config_change
+      - description: >
+          The cert-manager-edit ClusterRole no longer grants create on Challenges or create, patch
+          and update on Orders (GHSA-8rvj-mm4h-c258; already in 1.19.6 and 1.20.3)
+        type: behaviour_change
+      - description: >
+          Helm values prometheus.servicemonitor.targetPort, prometheus.servicemonitor.path and
+          prometheus.podmonitor.path are removed, and the metrics Service port is renamed from
+          tcp-prometheus-servicemonitor to http-metrics
+        type: config_change
+    risk_level: medium
+    upgrade_notes: >
+      Remove the three prometheus.* values from your overrides first: the values schema rejects
+      them. Update scrape configs that name the old port. If an Issuer's serviceAccountRef names the
+      controller's own ServiceAccount (Vault Kubernetes auth, Route53), create a Role and
+      RoleBinding for serviceaccounts/token or move to a dedicated ServiceAccount.
