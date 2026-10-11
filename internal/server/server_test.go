@@ -1,13 +1,16 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	kubeviltrumitev1alpha1 "github.com/jeikeibnaa/kube-viltrumite/api/v1alpha1"
@@ -80,6 +83,50 @@ func TestListStackUpgrades_Empty(t *testing.T) {
 	}
 	if len(items) != 0 {
 		t.Errorf("want empty array, got %d items", len(items))
+	}
+}
+
+// TestApproveStackUpgrade checks that approving sets spec.approved, which the
+// operator acts on, and leaves the status to the operator.
+func TestApproveStackUpgrade(t *testing.T) {
+	plan := &kubeviltrumitev1alpha1.StackUpgrade{
+		ObjectMeta: metav1.ObjectMeta{Name: "auto-vault-2.0.4", Namespace: "viltrumite-system"},
+		Spec: kubeviltrumitev1alpha1.StackUpgradeSpec{Tools: []kubeviltrumitev1alpha1.ToolUpgradeSpec{
+			{Name: "vault", CurrentVersion: "1.14.0", TargetVersion: "2.0.4", Risk: "LOW", Source: "helm", Namespace: "vault"},
+		}},
+		Status: kubeviltrumitev1alpha1.StackUpgradeStatus{Phase: kubeviltrumitev1alpha1.UpgradePhasePending},
+	}
+	c := fake.NewClientBuilder().WithScheme(newTestScheme(t)).WithObjects(plan).WithStatusSubresource(plan).Build()
+	h := (&Server{client: c, addr: DefaultBindAddress}).Handler()
+
+	// Twice: approving an approved plan is no error and changes nothing.
+	for i := 1; i <= 2; i++ {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, newLoopbackRequest(http.MethodPost, "/api/stackupgrades/viltrumite-system/auto-vault-2.0.4/approve"))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("approve %d: status %d, want 200: %s", i, rec.Code, rec.Body)
+		}
+		var view stackUpgradeView
+		if err := json.Unmarshal(rec.Body.Bytes(), &view); err != nil {
+			t.Fatalf("approve %d: unmarshal response: %v", i, err)
+		}
+		if !view.Spec.Approved {
+			t.Errorf("approve %d: response spec.approved = false, want true", i)
+		}
+
+		var got kubeviltrumitev1alpha1.StackUpgrade
+		if err := c.Get(context.Background(), client.ObjectKeyFromObject(plan), &got); err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if !got.Spec.Approved || got.Status.Phase != kubeviltrumitev1alpha1.UpgradePhasePending {
+			t.Errorf("approve %d: spec.approved %t, phase %q; want true and the operator's Pending", i, got.Spec.Approved, got.Status.Phase)
+		}
+	}
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, newLoopbackRequest(http.MethodPost, "/api/stackupgrades/viltrumite-system/missing/approve"))
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("approve a missing plan: status %d, want 404", rec.Code)
 	}
 }
 

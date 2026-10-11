@@ -7,6 +7,10 @@
 #   alias_origins:               — optional; for an alias too generic to trust alone: words, one of
 #     <alias>: [string]            which the chart's origin (Helm home/sources, Argo CD repoURL, Flux
 #                                  source name) must contain for the alias to count
+#   chart_repository: string     — Helm chart repository the chart_version values are published in
+#                                  (https:// or oci://); required when there are chart versions. A plain
+#                                  Helm release does not record its repository, so its upgrade plan
+#                                  takes the chart from here
 #   detection:                   — optional; how to find a raw `kubectl apply` install
 #     deployments[]:             — a Deployment, StatefulSet or DaemonSet matches by name or image
 #       name: string             — workload name
@@ -43,6 +47,8 @@
 tool: argo-cd
 aliases:
   - argocd
+
+chart_repository: https://argoproj.github.io/argo-helm
 
 detection:
   deployments:

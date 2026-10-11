@@ -44,11 +44,11 @@ Two custom resources:
 | Resource | Written by | Purpose |
 |---|---|---|
 | `CompatibilityPolicy` | You | Which tools to track, namespaces to watch, risk tolerance, optional auto-planning. The operator writes a per-tool status report back. |
-| `StackUpgrade` | The operator or the dashboard — never by hand | An executable upgrade plan. Phases: `Pending → Approved → Upgrading → Succeeded / Failed / RolledBack`. |
+| `StackUpgrade` | The operator or the dashboard — never by hand | An executable upgrade plan. Per tool it records where the tool is installed (`source`, `namespace`, `releaseName`, the managing Flux `HelmRelease` or Argo CD `Application`) and the chart to install (name, version, repository). It runs only once `spec.approved` is set, and an approved plan cannot change. Phases: `Pending → Approved → Upgrading → Succeeded / Failed / RolledBack`. |
 
 **Pull mode (default):** the operator scans and reports. You click *Plan upgrade*, then *Approve*.
 **Push mode (opt-in):** `spec.autoplan` creates plans automatically for upgrades at or below a risk
-ceiling; `autoApprove` is intended for non-production clusters only.
+ceiling; `autoApprove` creates them already approved and is intended for non-production clusters only.
 
 ```yaml
 apiVersion: kubeviltrumite.io/v1alpha1
@@ -74,7 +74,7 @@ spec:
 | CRDs, reconcilers, pull + push model | ✅ Working |
 | Detection: Helm, Flux `HelmRelease` (v2), Argo CD `Application` (multi-source), raw `kubectl apply` installs | ✅ Working: canonical tool names and app versions, one record per tool (GitOps over Helm over raw) |
 | Compatibility knowledge base (6 tools) | ✅ Verified against upstream (2026-09-30): one entry per minor up to cert-manager 1.21, Argo CD 3.5, Istio 1.31, External Secrets 2.11, Prometheus Operator 0.94, Vault 2.0; release-notes links; validated on load |
-| Upgrade execution (Helm SDK, atomic rollback) | 🔴 Experimental, reworked in v0.3.0 |
+| Upgrade execution (Helm SDK, atomic rollback) | 🔴 Plans record the release, chart and repository, and run only once approved; the executor still lacks write RBAC and a per-source router (v0.3.0) |
 | Cross-tool ordering and multi-step plans | 🔴 Planned for v0.4.0 |
 | Dashboard | 🟡 Upgrade list + approve; full dashboard in v0.5.0 |
 | AI providers | 🟡 Ollama adapter works; wiring + OpenAI-compatible/Anthropic in v0.6.0 |

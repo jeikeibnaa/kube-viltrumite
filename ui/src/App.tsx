@@ -5,11 +5,12 @@ interface ToolUpgradeSpec {
   currentVersion: string
   targetVersion: string
   risk: string
+  source: string
 }
 
 interface StackUpgradeSpec {
   tools?: ToolUpgradeSpec[]
-  approvalRequired?: boolean
+  approved?: boolean
 }
 
 interface StackUpgradeStatus {
@@ -91,7 +92,7 @@ export default function App() {
   }
 
   const tools = (u: StackUpgrade) =>
-    u.spec.tools?.map((t) => `${t.name} ${t.currentVersion}→${t.targetVersion}`).join(', ') ?? '—'
+    u.spec.tools?.map((t) => `${t.name} ${t.currentVersion}→${t.targetVersion} (${t.source})`).join(', ') ?? '—'
 
   const topRisk = (u: StackUpgrade) => u.spec.tools?.[0]?.risk ?? '—'
 
@@ -140,7 +141,7 @@ export default function App() {
                         <td>{tools(u)}</td>
                         <td>{topRisk(u)}</td>
                         <td>
-                          {u.status.phase === 'Pending' && (
+                          {!u.spec.approved && (u.status.phase ?? 'Pending') === 'Pending' && (
                             <button
                               className="btn-approve"
                               onClick={() => { void handleApprove(u.namespace, u.name) }}

@@ -92,6 +92,7 @@ func (e *HelmExecutor) Upgrade(ctx context.Context, step planner.UpgradeStep) (*
 	upgrade.Timeout = 5 * time.Minute
 	upgrade.Atomic = true
 	upgrade.Version = step.ToVersion // chart version (ChartPathOptions.Version)
+	upgrade.RepoURL = step.RepoURL   // empty for an oci:// or local ChartRef
 
 	settings := cli.New()
 	if e.kubeconfig != "" {

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Smoke test: install the operator into a throwaway kind cluster the way a user
 # would (image -> kind load -> kubectl apply -k config/default) and check that it
-# reconciles a CompatibilityPolicy.
+# reconciles a CompatibilityPolicy and holds an unapproved StackUpgrade.
 #
 #   make e2e                    create the cluster, test, delete the cluster
 #   KEEP_CLUSTER=1 make e2e     leave the cluster running afterwards (the next
@@ -22,6 +22,8 @@ readonly LEASE=kube-viltrumite.kubeviltrumite.io
 readonly POLICY_FILE=config/samples/compatibilitypolicy_sample.yaml
 readonly POLICY_NAMESPACE=default
 readonly POLICY_NAME=test-policy
+readonly PLAN_FILE=config/samples/stackupgrade_sample.yaml
+readonly PLAN_NAME=test-upgrade
 
 cd "$(dirname "$0")/.."
 mkdir -p bin
@@ -51,6 +53,7 @@ cleanup() {
     kubectl -n "$NAMESPACE" describe pods || true
     kubectl -n "$NAMESPACE" logs "deployment/$DEPLOYMENT" --tail=200 || true
     kubectl -n "$POLICY_NAMESPACE" get compatibilitypolicy "$POLICY_NAME" -o yaml || true
+    kubectl -n "$POLICY_NAMESPACE" get stackupgrade "$PLAN_NAME" -o yaml || true
     kubectl get events -A --sort-by=.lastTimestamp | tail -30 || true
   fi
   if [[ "${KEEP_CLUSTER:-}" == "1" ]]; then
@@ -100,6 +103,17 @@ last_scan=$(kubectl -n "$POLICY_NAMESPACE" get compatibilitypolicy "$POLICY_NAME
 [[ -n "$last_scan" ]] || fail ".status.lastScanTime is empty"
 echo "tracked tools: $(kubectl -n "$POLICY_NAMESPACE" get compatibilitypolicy "$POLICY_NAME" \
   -o jsonpath='{range .status.tools[*]}{.name}={.message}; {end}')"
+
+# The sample plan is not approved: the operator must hold it in Pending and
+# never reach the executor.
+log "Apply $PLAN_FILE (not approved)"
+kubectl apply -f "$PLAN_FILE"
+kubectl -n "$POLICY_NAMESPACE" wait "stackupgrade/$PLAN_NAME" \
+  --for=jsonpath='{.status.phase}'=Pending --timeout=60s
+reason=$(kubectl -n "$POLICY_NAMESPACE" get stackupgrade "$PLAN_NAME" \
+  -o jsonpath='{.status.conditions[?(@.type=="Ready")].reason}')
+[[ "$reason" == WaitingForApproval ]] || fail "plan $PLAN_NAME: Ready reason '$reason', want WaitingForApproval"
+kubectl -n "$POLICY_NAMESPACE" get stackupgrade "$PLAN_NAME"
 
 log "Leader election"
 pod=$(kubectl -n "$NAMESPACE" get pods -l app.kubernetes.io/component=controller-manager \

@@ -34,13 +34,27 @@ type InstalledTool struct {
 	Namespace   string
 	ReleaseName string
 	Source      string // helm | fluxcd | argocd | raw
-	RepoURL     string
+	// RepoURL is the chart repository the source records: an Argo CD
+	// Application's repoURL, or the url of the Flux HelmRepository a
+	// HelmRelease's chart comes from. A plain Helm release records none.
+	RepoURL string
+	// ManagedBy is the GitOps object that installs the tool: a Flux
+	// HelmRelease or an Argo CD Application. Nil for plain Helm and raw.
+	ManagedBy *ObjectRef
 	// ChartOrigins is evidence of where the chart comes from: its home and
-	// sources (Helm), the repoURL (Argo CD) or the source name (Flux).
+	// sources (Helm), the repoURL (Argo CD) or the source name and its
+	// HelmRepository's url (Flux).
 	ChartOrigins []string
 	// Images are the container images the source reports the tool running
 	// (Argo CD's status.summary.images).
 	Images []string
+}
+
+// ObjectRef names a Kubernetes object.
+type ObjectRef struct {
+	Kind      string
+	Namespace string
+	Name      string
 }
 
 // HelmReleaseLister lists the Helm releases stored in a namespace.
@@ -76,6 +90,13 @@ func listHelmReleasesSDK(_ context.Context, namespace string) ([]*release.Releas
 var (
 	helmReleaseGK           = schema.GroupKind{Group: "helm.toolkit.fluxcd.io", Kind: "HelmRelease"}
 	fluxHelmReleaseVersions = []string{"v2", "v2beta2", "v2beta1"}
+)
+
+// helmRepositoryGK is the Flux source a HelmRelease's chart usually comes
+// from; current Flux serves v1, Flux 2.0-2.2 v1beta2.
+var (
+	helmRepositoryGK           = schema.GroupKind{Group: "source.toolkit.fluxcd.io", Kind: "HelmRepository"}
+	fluxHelmRepositoryVersions = []string{"v1", "v1beta2"}
 )
 
 var argoCDAppGVK = schema.GroupVersionKind{
@@ -184,13 +205,65 @@ func (s *ClusterScanner) listFluxHelmReleases(ctx context.Context, namespaces []
 
 	watched := toSet(namespaces)
 	var tools []InstalledTool
+	var repos map[string]string // read on first use
 	for i := range list.Items {
 		hr := &list.Items[i]
-		if t := fluxTool(hr); watched[t.Namespace] || watched[hr.GetNamespace()] {
-			tools = append(tools, t)
+		t := fluxTool(hr)
+		if !watched[t.Namespace] && !watched[hr.GetNamespace()] {
+			continue
 		}
+		if ref, ok := helmRepositoryRef(hr); ok {
+			if repos == nil {
+				repos = s.helmRepositoryURLs(ctx)
+			}
+			if url := repos[ref]; url != "" {
+				t.RepoURL = url
+				t.ChartOrigins = append(t.ChartOrigins, url)
+			}
+		}
+		tools = append(tools, t)
 	}
 	return tools, nil
+}
+
+// helmRepositoryRef returns "namespace/name" of the HelmRepository a
+// HelmRelease's chart comes from (spec.chart.spec.sourceRef), and false when
+// the chart comes from another kind of source.
+func helmRepositoryRef(hr *unstructured.Unstructured) (string, bool) {
+	ref, ok, _ := unstructured.NestedMap(hr.Object, "spec", "chart", "spec", "sourceRef")
+	if !ok || stringField(ref, "kind") != helmRepositoryGK.Kind || stringField(ref, "name") == "" {
+		return "", false
+	}
+	namespace := stringField(ref, "namespace")
+	if namespace == "" {
+		namespace = hr.GetNamespace()
+	}
+	return namespace + "/" + stringField(ref, "name"), true
+}
+
+// helmRepositoryURLs maps "namespace/name" of every Flux HelmRepository to its
+// url. The map is empty, never nil, when they cannot be listed: the
+// repositories are then unknown, which costs no scan results.
+func (s *ClusterScanner) helmRepositoryURLs(ctx context.Context) map[string]string {
+	urls := map[string]string{}
+	for _, version := range fluxHelmRepositoryVersions {
+		list := &unstructured.UnstructuredList{}
+		list.SetGroupVersionKind(helmRepositoryGK.WithVersion(version).GroupVersion().WithKind(helmRepositoryGK.Kind + "List"))
+		err := s.Client.List(ctx, list)
+		if apimeta.IsNoMatchError(err) {
+			continue
+		}
+		if err != nil {
+			log.FromContext(ctx).Info("flux scanner: cannot list HelmRepositories, chart repositories unknown", "err", err)
+			return urls
+		}
+		for i := range list.Items {
+			repo := &list.Items[i]
+			urls[repo.GetNamespace()+"/"+repo.GetName()] = nestedString(repo.Object, "spec", "url")
+		}
+		return urls
+	}
+	return urls
 }
 
 // fluxTool reads one HelmRelease. Its release history (v2, v2beta2) records
@@ -208,6 +281,7 @@ func fluxTool(hr *unstructured.Unstructured) InstalledTool {
 		Namespace:    hr.GetNamespace(),
 		ReleaseName:  nestedString(obj, "spec", "releaseName"),
 		Source:       "fluxcd",
+		ManagedBy:    &ObjectRef{Kind: helmReleaseGK.Kind, Namespace: hr.GetNamespace(), Name: hr.GetName()},
 	}
 	if targetNS != "" {
 		t.Namespace = targetNS
@@ -407,6 +481,7 @@ func argoTools(app *unstructured.Unstructured) []InstalledTool {
 			ReleaseName:  release,
 			Source:       "argocd",
 			RepoURL:      repoURL,
+			ManagedBy:    &ObjectRef{Kind: argoCDAppGVK.Kind, Namespace: app.GetNamespace(), Name: app.GetName()},
 			ChartOrigins: []string{repoURL},
 			Images:       images,
 		})

@@ -1,12 +1,22 @@
+# A plan as autoplan writes one for a plain Helm release. It waits in the Pending phase until
+# it is approved, and an approved plan cannot change:
+#   kubectl patch stackupgrade test-upgrade --type merge -p '{"spec":{"approved":true}}'
 apiVersion: kubeviltrumite.io/v1alpha1
 kind: StackUpgrade
 metadata:
   name: test-upgrade
   namespace: default
 spec:
-  approvalRequired: false
+  approved: false
   tools:
     - name: cert-manager
-      currentVersion: v1.13.0
-      targetVersion: v1.14.0
-      risk: LOW
+      currentVersion: v1.20.4
+      targetVersion: 1.21.0
+      risk: MEDIUM
+      source: helm
+      namespace: cert-manager
+      releaseName: cert-manager
+      chart:
+        name: cert-manager
+        version: v1.21.0
+        repository: https://charts.jetstack.io

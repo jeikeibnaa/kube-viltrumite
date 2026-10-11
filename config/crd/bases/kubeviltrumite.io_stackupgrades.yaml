@@ -18,6 +18,9 @@ spec:
     - jsonPath: .status.phase
       name: Phase
       type: string
+    - jsonPath: .spec.approved
+      name: Approved
+      type: boolean
     - jsonPath: .spec.tools[0].risk
       name: Risk
       type: string
@@ -49,7 +52,11 @@ spec:
           spec:
             description: StackUpgradeSpec defines the desired state of StackUpgrade.
             properties:
-              approvalRequired:
+              approved:
+                default: false
+                description: |-
+                  Approved lets the operator carry out the plan; until then it waits in
+                  the Pending phase. An approved plan cannot change, approval included.
                 type: boolean
               gitRepo:
                 description: GitRepoRef references a git repository with optional
@@ -83,24 +90,112 @@ spec:
                 type: object
               tools:
                 items:
-                  description: ToolUpgradeSpec describes a single tool upgrade.
+                  description: |-
+                    ToolUpgradeSpec describes the upgrade of one tool and where the tool is
+                    installed, as the scan that planned it found it.
                   properties:
+                    chart:
+                      description: Chart is the chart to upgrade to. Unset for a raw
+                        install.
+                      properties:
+                        name:
+                          description: |-
+                            Name is the chart's name, which may differ from the tool's
+                            (kube-prometheus-stack for prometheus-stack, istiod for istio).
+                          type: string
+                        repository:
+                          description: |-
+                            Repository is the chart repository URL (https:// or oci://): the one
+                            the install records (an Argo CD Application's repoURL, a Flux
+                            HelmRepository's url), or else the knowledge base's, because a plain
+                            Helm release does not record where its chart came from.
+                          type: string
+                        version:
+                          description: |-
+                            Version is the chart version that ships the target version, from the
+                            knowledge base.
+                          type: string
+                      required:
+                      - name
+                      - version
+                      type: object
                     currentVersion:
+                      description: CurrentVersion is the installed app version.
                       type: string
+                    managedBy:
+                      description: |-
+                        ManagedBy is the GitOps object that owns the release, for the fluxcd
+                        and argocd sources.
+                      properties:
+                        kind:
+                          description: |-
+                            Kind is HelmRelease (Flux, helm.toolkit.fluxcd.io) or Application
+                            (Argo CD, argoproj.io).
+                          enum:
+                          - HelmRelease
+                          - Application
+                          type: string
+                        name:
+                          type: string
+                        namespace:
+                          type: string
+                      required:
+                      - kind
+                      - name
+                      - namespace
+                      type: object
                     name:
+                      description: Name is the tool's knowledge-base name.
+                      type: string
+                    namespace:
+                      description: |-
+                        Namespace is the namespace the tool runs in: its Helm release's
+                        namespace, an Argo CD Application's destination or, for a raw
+                        install, its workloads' namespace.
+                      type: string
+                    releaseName:
+                      description: ReleaseName is the tool's Helm release. Empty for
+                        a raw install.
                       type: string
                     risk:
+                      description: Risk is the knowledge base's risk of upgrading
+                        to the target version.
+                      enum:
+                      - LOW
+                      - MEDIUM
+                      - HIGH
+                      - BLOCKING
+                      type: string
+                    source:
+                      description: |-
+                        Source is how the tool is installed: helm (a plain Helm release),
+                        fluxcd (a Flux HelmRelease), argocd (an Argo CD Application) or raw
+                        (kubectl apply, no Helm release).
+                      enum:
+                      - helm
+                      - fluxcd
+                      - argocd
+                      - raw
                       type: string
                     targetVersion:
+                      description: TargetVersion is the app version to upgrade to.
                       type: string
                   required:
                   - currentVersion
                   - name
+                  - namespace
                   - risk
+                  - source
                   - targetVersion
                   type: object
+                minItems: 1
                 type: array
+            required:
+            - tools
             type: object
+            x-kubernetes-validations:
+            - message: an approved plan cannot change
+              rule: '!has(oldSelf.approved) || !oldSelf.approved || self == oldSelf'
           status:
             description: StackUpgradeStatus defines the observed state of StackUpgrade.
             properties:
@@ -176,6 +271,8 @@ spec:
               totalSteps:
                 type: integer
             type: object
+        required:
+        - spec
         type: object
     served: true
     storage: true

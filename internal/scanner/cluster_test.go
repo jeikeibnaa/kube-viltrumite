@@ -3,6 +3,7 @@ package scanner
 import (
 	"context"
 	"errors"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -12,6 +13,7 @@ import (
 	"go.uber.org/zap/zaptest/observer"
 	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/release"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -23,7 +25,7 @@ import (
 )
 
 // makeHelmRelease builds a FluxCD HelmRelease (API version v2) with a chart
-// template and no status.
+// template from the HelmRepository named after the chart, and no status.
 func makeHelmRelease(name, namespace, chartName, version string) *unstructured.Unstructured {
 	obj := &unstructured.Unstructured{}
 	obj.SetGroupVersionKind(helmReleaseGK.WithVersion("v2"))
@@ -31,7 +33,18 @@ func makeHelmRelease(name, namespace, chartName, version string) *unstructured.U
 	obj.SetNamespace(namespace)
 	_ = unstructured.SetNestedField(obj.Object, chartName, "spec", "chart", "spec", "chart")
 	_ = unstructured.SetNestedField(obj.Object, version, "spec", "chart", "spec", "version")
+	_ = unstructured.SetNestedField(obj.Object, "HelmRepository", "spec", "chart", "spec", "sourceRef", "kind")
 	_ = unstructured.SetNestedField(obj.Object, chartName, "spec", "chart", "spec", "sourceRef", "name")
+	return obj
+}
+
+// makeHelmRepository builds a Flux HelmRepository at API version.
+func makeHelmRepository(version, name, namespace, url string) *unstructured.Unstructured {
+	obj := &unstructured.Unstructured{}
+	obj.SetGroupVersionKind(helmRepositoryGK.WithVersion(version))
+	obj.SetName(name)
+	obj.SetNamespace(namespace)
+	_ = unstructured.SetNestedField(obj.Object, url, "spec", "url")
 	return obj
 }
 
@@ -158,10 +171,11 @@ func TestScanFluxHelmReleases(t *testing.T) {
 	checks := []struct {
 		name, chartVersion, appVersion, namespace, release string
 		origins                                            []string
+		helmReleaseNS, helmRelease                         string
 	}{
-		{"cert-manager", "v1.12.0", "", "platform", "cert-manager", []string{"cert-manager"}},
-		{"external-secrets", "0.9.5", "v0.9.5", "platform", "eso", []string{"external-secrets"}},
-		{"kube-prometheus-stack", "58.0.0", "v0.73.0", "monitoring", "monitoring-monitoring-stack", []string{"kps-oci"}},
+		{"cert-manager", "v1.12.0", "", "platform", "cert-manager", []string{"cert-manager"}, "platform", "cert-manager"},
+		{"external-secrets", "0.9.5", "v0.9.5", "platform", "eso", []string{"external-secrets"}, "platform", "eso"},
+		{"kube-prometheus-stack", "58.0.0", "v0.73.0", "monitoring", "monitoring-monitoring-stack", []string{"kps-oci"}, "flux-system", "monitoring-stack"},
 	}
 	for _, ck := range checks {
 		tool, ok := got[ck.name]
@@ -181,6 +195,92 @@ func TestScanFluxHelmReleases(t *testing.T) {
 		if !slices.Equal(tool.ChartOrigins, ck.origins) {
 			t.Errorf("%s: ChartOrigins=%v, want %v", ck.name, tool.ChartOrigins, ck.origins)
 		}
+		if tool.ManagedBy == nil || tool.ManagedBy.Kind != "HelmRelease" || tool.ManagedBy.Name != ck.helmRelease ||
+			tool.ManagedBy.Namespace != ck.helmReleaseNS {
+			t.Errorf("%s: ManagedBy=%+v, want HelmRelease %s/%s", ck.name, tool.ManagedBy, ck.helmReleaseNS, ck.helmRelease)
+		}
+	}
+}
+
+// TestScanFluxHelmReleases_ChartRepository covers the url of the
+// HelmRepository a chart comes from, read with the newest API version the
+// cluster serves. Other sources record no repository, and a list the
+// operator may not make costs only the repositories.
+func TestScanFluxHelmReleases_ChartRepository(t *testing.T) {
+	// From the HelmRepository in its own namespace.
+	certManager := makeHelmRelease("cert-manager", "flux-system", "cert-manager", "v1.14.0")
+	_ = unstructured.SetNestedField(certManager.Object, "jetstack", "spec", "chart", "spec", "sourceRef", "name")
+	// From an OCI HelmRepository in another namespace.
+	podinfo := makeHelmRelease("podinfo", "flux-system", "podinfo", "6.5.0")
+	_ = unstructured.SetNestedMap(podinfo.Object, map[string]interface{}{
+		"kind": "HelmRepository", "name": "podinfo", "namespace": "sources",
+	}, "spec", "chart", "spec", "sourceRef")
+	// From a GitRepository: no chart repository.
+	vault := makeHelmRelease("vault", "flux-system", "vault", "0.28.0")
+	_ = unstructured.SetNestedField(vault.Object, "GitRepository", "spec", "chart", "spec", "sourceRef", "kind")
+	// From an OCIRepository through spec.chartRef: no HelmRepository.
+	eso := &unstructured.Unstructured{}
+	eso.SetGroupVersionKind(helmReleaseGK.WithVersion("v2"))
+	eso.SetName("external-secrets")
+	eso.SetNamespace("flux-system")
+	_ = unstructured.SetNestedMap(eso.Object, map[string]interface{}{"kind": "OCIRepository", "name": "eso"}, "spec", "chartRef")
+
+	want := map[string]string{
+		"cert-manager": "https://charts.jetstack.io",
+		"podinfo":      "oci://ghcr.io/stefanprodan/charts",
+		"vault":        "",
+		"":             "", // the OCIRepository's HelmRelease has no chart name until released
+	}
+
+	tests := []struct {
+		name    string
+		version string // the HelmRepository API version the cluster serves
+		funcs   interceptor.Funcs
+		want    map[string]string
+	}{
+		{name: "v1", version: "v1", want: want},
+		{name: "Flux 2.0-2.2: v1beta2", version: "v1beta2", funcs: noMatchFor(helmRepositoryGK.Group, helmRepositoryGK.Kind, "v1"), want: want},
+		{
+			name:    "HelmRepositories cannot be listed",
+			version: "v1",
+			funcs: interceptor.Funcs{
+				List: func(ctx context.Context, cl client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+					if ul, ok := list.(*unstructured.UnstructuredList); ok && ul.GroupVersionKind().Group == helmRepositoryGK.Group {
+						return apierrors.NewForbidden(schema.GroupResource{Group: helmRepositoryGK.Group, Resource: "helmrepositories"}, "", errors.New("denied"))
+					}
+					return cl.List(ctx, list, opts...)
+				},
+			},
+			want: map[string]string{"cert-manager": "", "podinfo": "", "vault": "", "": ""},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c := fake.NewClientBuilder().
+				WithScheme(runtime.NewScheme()).
+				WithObjects(certManager, podinfo, vault, eso,
+					makeHelmRepository(tc.version, "jetstack", "flux-system", "https://charts.jetstack.io"),
+					makeHelmRepository(tc.version, "podinfo", "sources", "oci://ghcr.io/stefanprodan/charts"),
+					// Same name as podinfo's, in the HelmRelease's namespace: not the one it names.
+					makeHelmRepository(tc.version, "podinfo", "flux-system", "https://stefanprodan.github.io/podinfo")).
+				WithInterceptorFuncs(tc.funcs).
+				Build()
+
+			tools, err := (&ClusterScanner{Client: c}).scanFluxHelmReleases(context.Background(), []string{"flux-system"})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			got := map[string]string{}
+			for _, tool := range tools {
+				got[tool.Name] = tool.RepoURL
+				if tool.RepoURL != "" && !slices.Contains(tool.ChartOrigins, tool.RepoURL) {
+					t.Errorf("%s: ChartOrigins=%v, want the repository url among them", tool.Name, tool.ChartOrigins)
+				}
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("RepoURL by chart = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -430,6 +530,12 @@ func TestScanArgoCDApplications(t *testing.T) {
 	vault := got["vault"]
 	if vault.ChartVersion != "0.28.0" || vault.Namespace != "vault" || vault.ReleaseName != "vault-prod" || vault.RepoURL != "https://helm.releases.hashicorp.com" {
 		t.Errorf("vault: %+v", vault)
+	}
+
+	for chart, app := range map[string]string{"argo-cd": "argo-cd-release", "vault": "vault"} {
+		if want := (&ObjectRef{Kind: "Application", Namespace: "argocd", Name: app}); !reflect.DeepEqual(got[chart].ManagedBy, want) {
+			t.Errorf("%s: ManagedBy=%+v, want %+v", chart, got[chart].ManagedBy, want)
+		}
 	}
 }
 

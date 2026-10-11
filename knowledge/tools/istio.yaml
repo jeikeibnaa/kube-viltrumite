@@ -7,6 +7,10 @@
 #   alias_origins:               — optional; for an alias too generic to trust alone: words, one of
 #     <alias>: [string]            which the chart's origin (Helm home/sources, Argo CD repoURL, Flux
 #                                  source name) must contain for the alias to count
+#   chart_repository: string     — Helm chart repository the chart_version values are published in
+#                                  (https:// or oci://); required when there are chart versions. A plain
+#                                  Helm release does not record its repository, so its upgrade plan
+#                                  takes the chart from here
 #   detection:                   — optional; how to find a raw `kubectl apply` install
 #     deployments[]:             — a Deployment, StatefulSet or DaemonSet matches by name or image
 #       name: string             — workload name
@@ -38,7 +42,9 @@
 # (https://istio.io/latest/news/releases/), the supported Kubernetes versions in istio.io's
 # data/compatibility/supportStatus.yml, and the chart indexes (istio-release.storage.googleapis.com
 # up to 1.30, https://blob.istio.io/istio-release/charts from 1.31). The base and istiod charts
-# publish the Istio version as chart version and set no kubeVersion. Every entry assumes upstream's
+# publish the Istio version as chart version and set no kubeVersion. chart_repository is
+# blob.istio.io, which also serves every earlier base and istiod chart listed here (checked
+# 2026-10-11); the old index stops at 1.30. Every entry assumes upstream's
 # procedure: upgrade the control plane one minor at a time (canary upgrades may skip one), then
 # restart injected workloads so their sidecars match.
 
@@ -48,6 +54,8 @@ aliases:
   - base
 alias_origins:
   base: [istio]
+
+chart_repository: https://blob.istio.io/istio-release/charts
 
 detection:
   deployments:

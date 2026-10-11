@@ -3,8 +3,10 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -16,6 +18,11 @@ import (
 	"github.com/jeikeibnaa/kube-viltrumite/internal/executor"
 	"github.com/jeikeibnaa/kube-viltrumite/internal/planner"
 )
+
+// stepInterval is when the reconciler looks at a plan again after moving it
+// on. The watch event of its own status write usually comes first; the
+// requeue is the fallback.
+const stepInterval = 5 * time.Second
 
 // Upgrader executes a single Helm release upgrade operation.
 type Upgrader interface {
@@ -40,7 +47,7 @@ func (r *StackUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	switch upgrade.Status.Phase {
-	case kubeviltrumitev1alpha1.UpgradePhasePending:
+	case "", kubeviltrumitev1alpha1.UpgradePhasePending:
 		return r.reconcilePending(ctx, &upgrade)
 	case kubeviltrumitev1alpha1.UpgradePhaseApproved:
 		return r.reconcileApproved(ctx, &upgrade)
@@ -49,16 +56,17 @@ func (r *StackUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	case kubeviltrumitev1alpha1.UpgradePhaseFailed:
 		return r.reconcileFailed(ctx, &upgrade)
 	default:
-		upgrade.Status.Phase = kubeviltrumitev1alpha1.UpgradePhasePending
-		if err := r.Status().Update(ctx, &upgrade); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{Requeue: true}, nil //nolint:staticcheck // SA1019: S27 removes Requeue
+		// Succeeded and RolledBack are final: the plan is never carried out again.
+		return ctrl.Result{}, nil
 	}
 }
 
+// reconcilePending checks a new or waiting plan and moves it to Approved once
+// spec.approved is set. A plan that waits needs no requeue: approving it, or
+// correcting it, is a spec change, which the watch delivers.
 func (r *StackUpgradeReconciler) reconcilePending(ctx context.Context, upgrade *kubeviltrumitev1alpha1.StackUpgrade) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
+	upgrade.Status.Phase = kubeviltrumitev1alpha1.UpgradePhasePending
 
 	if r.Matrix != nil {
 		for _, tool := range upgrade.Spec.Tools {
@@ -79,25 +87,32 @@ func (r *StackUpgradeReconciler) reconcilePending(ctx context.Context, upgrade *
 		}
 	}
 
-	if upgrade.Spec.ApprovalRequired {
+	if !upgrade.Spec.Approved {
 		apimeta.SetStatusCondition(&upgrade.Status.Conditions, metav1.Condition{
 			Type:               "Ready",
 			Status:             metav1.ConditionFalse,
 			Reason:             "WaitingForApproval",
-			Message:            "upgrade requires manual approval",
+			Message:            "set spec.approved to carry out the plan",
 			LastTransitionTime: metav1.Now(),
 		})
 		if err := r.Status().Update(ctx, upgrade); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		return ctrl.Result{}, nil
 	}
 
 	upgrade.Status.Phase = kubeviltrumitev1alpha1.UpgradePhaseApproved
+	apimeta.SetStatusCondition(&upgrade.Status.Conditions, metav1.Condition{
+		Type:               "Ready",
+		Status:             metav1.ConditionFalse,
+		Reason:             "Approved",
+		Message:            "approved; the upgrade starts next",
+		LastTransitionTime: metav1.Now(),
+	})
 	if err := r.Status().Update(ctx, upgrade); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{Requeue: true}, nil //nolint:staticcheck // SA1019: S27 removes Requeue
+	return ctrl.Result{RequeueAfter: stepInterval}, nil
 }
 
 func (r *StackUpgradeReconciler) reconcileApproved(ctx context.Context, upgrade *kubeviltrumitev1alpha1.StackUpgrade) (ctrl.Result, error) {
@@ -106,10 +121,17 @@ func (r *StackUpgradeReconciler) reconcileApproved(ctx context.Context, upgrade 
 	upgrade.Status.StartedAt = &now
 	upgrade.Status.TotalSteps = len(upgrade.Spec.Tools)
 	upgrade.Status.CurrentStep = 0
+	apimeta.SetStatusCondition(&upgrade.Status.Conditions, metav1.Condition{
+		Type:               "Ready",
+		Status:             metav1.ConditionFalse,
+		Reason:             "Upgrading",
+		Message:            "upgrade in progress",
+		LastTransitionTime: metav1.Now(),
+	})
 	if err := r.Status().Update(ctx, upgrade); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	return ctrl.Result{RequeueAfter: stepInterval}, nil
 }
 
 func (r *StackUpgradeReconciler) reconcileUpgrading(ctx context.Context, upgrade *kubeviltrumitev1alpha1.StackUpgrade) (ctrl.Result, error) {
@@ -132,15 +154,27 @@ func (r *StackUpgradeReconciler) reconcileUpgrading(ctx context.Context, upgrade
 	}
 
 	step := upgrade.Spec.Tools[currentStep]
-	planStep := planner.UpgradeStep{
-		ToolName:    step.Name,
-		ReleaseName: step.Name,
-		ChartRef:    step.Name,
-		FromVersion: step.CurrentVersion,
-		ToVersion:   step.TargetVersion,
+
+	// Record the step before running it. The write fails with a conflict when
+	// this reconcile read a stale copy of the plan, such as one cached before
+	// the write that finished the previous step: running from it would repeat
+	// that step.
+	apimeta.SetStatusCondition(&upgrade.Status.Conditions, metav1.Condition{
+		Type:               "Progressing",
+		Status:             metav1.ConditionTrue,
+		Reason:             "StepStarted",
+		Message:            fmt.Sprintf("Upgrading %s to %s (step %d of %d)", step.Name, step.TargetVersion, currentStep+1, len(upgrade.Spec.Tools)),
+		LastTransitionTime: metav1.Now(),
+	})
+	if err := r.Status().Update(ctx, upgrade); err != nil {
+		if apierrors.IsConflict(err) {
+			log.FromContext(ctx).V(1).Info("stale copy of the plan, retrying", "step", currentStep)
+			return ctrl.Result{RequeueAfter: stepInterval}, nil
+		}
+		return ctrl.Result{}, err
 	}
 
-	result, err := r.Executor.Upgrade(ctx, planStep)
+	result, err := r.Executor.Upgrade(ctx, helmStep(step))
 	if err != nil {
 		upgrade.Status.Phase = kubeviltrumitev1alpha1.UpgradePhaseFailed
 		upgrade.Status.FailureReason = err.Error()
@@ -181,7 +215,26 @@ func (r *StackUpgradeReconciler) reconcileUpgrading(ctx context.Context, upgrade
 	if err := r.Status().Update(ctx, upgrade); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	return ctrl.Result{RequeueAfter: stepInterval}, nil
+}
+
+// helmStep is the executor's view of a plan step: the release to upgrade and
+// the chart version to install. An oci:// repository holds the chart under
+// its name; any other repository is an index the chart is looked up in.
+func helmStep(step kubeviltrumitev1alpha1.ToolUpgradeSpec) planner.UpgradeStep {
+	s := planner.UpgradeStep{
+		ToolName:    step.Name,
+		ReleaseName: step.ReleaseName,
+		Namespace:   step.Namespace,
+		FromVersion: step.CurrentVersion,
+	}
+	if c := step.Chart; c != nil {
+		s.ChartRef, s.RepoURL, s.ToVersion = c.Name, c.Repository, c.Version
+		if strings.HasPrefix(c.Repository, "oci://") {
+			s.ChartRef, s.RepoURL = strings.TrimSuffix(c.Repository, "/")+"/"+c.Name, ""
+		}
+	}
+	return s
 }
 
 func (r *StackUpgradeReconciler) reconcileFailed(ctx context.Context, upgrade *kubeviltrumitev1alpha1.StackUpgrade) (ctrl.Result, error) {

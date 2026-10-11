@@ -1,6 +1,6 @@
 # Kube-Viltrumite — project handoff context
 
-Read this at the start of every session (CLAUDE.md → Session Workflow). It captures the project's current state, the audit findings, the roadmap to v1.0.0, and carried-forward prompts. Last updated 2026-10-01 (S26).
+Read this at the start of every session (CLAUDE.md → Session Workflow). It captures the project's current state, the audit findings, the roadmap to v1.0.0, and carried-forward prompts. Last updated 2026-10-11 (S27).
 
 ---
 
@@ -22,7 +22,7 @@ Self-hosted Kubernetes operator + web UI, installed via Helm into the user's own
 
 - Operator (kubebuilder v4 + controller-runtime) with two CRDs:
   - `CompatibilityPolicy` — engineer declares which tools to track, namespaces, risk tolerance, AI config, and (optionally) auto-plan settings. The operator scans and writes a status report.
-  - `StackUpgrade` — the executable upgrade plan. Phase state machine: Pending -> Approved -> Upgrading -> Succeeded / Failed / RolledBack.
+  - `StackUpgrade` — the executable upgrade plan. Per tool it records where the tool is installed (`source`, `namespace`, `releaseName`, `managedBy` Flux HelmRelease / Argo CD Application) and the chart to install (`chart`: name, KB chart version, repository). It runs once `spec.approved` is set; a CRD rule keeps an approved plan from changing. Phase state machine: Pending -> Approved -> Upgrading -> Succeeded / Failed / RolledBack (the last three final).
 - AIProvider interface (`internal/ai/provider.go`) with four adapters: Anthropic, OpenAI-compatible, Ollama (on-prem), and Noop (AI-free). The operator only ever calls the interface, never a specific provider.
 - Scanners: cluster scanner (FluxCD HelmRelease, plain Helm, ArgoCD Applications) and workload scanner (raw `kubectl apply` installs, detected by Deployment/DaemonSet container image tags).
 - Planner: YAML compatibility knowledge base (`knowledge/tools/`) + matrix resolver + upgrade-path ordering + risk scoring.
@@ -32,7 +32,7 @@ Self-hosted Kubernetes operator + web UI, installed via Helm into the user's own
 ### The pull + push model (key design decision)
 
 - Pull (always on): the operator scans and writes a status report per tracked tool. Nothing executes automatically. The engineer reviews the report in the UI and clicks "Plan upgrade" to create a `StackUpgrade`, then "Approve" to execute. Two human gates. This is the safe default for production / banking.
-- Push (opt-in, per policy, risk-capped): if `spec.autoplan.enabled` is true, the operator also auto-creates `StackUpgrade` objects for upgrades at or below `autoplan.maxRisk`. If `autoplan.autoApprove` is true it creates them already Approved (for non-prod). Default ships disabled.
+- Push (opt-in, per policy, risk-capped): if `spec.autoplan.enabled` is true, the operator also auto-creates `StackUpgrade` objects for upgrades at or below `autoplan.maxRisk`. If `autoplan.autoApprove` is true it creates them with `spec.approved: true` (for non-prod). Default ships disabled.
 
 The engineer only ever writes `CompatibilityPolicy`. `StackUpgrade` is created either by clicking in the UI (pull) or by the gated push step — never hand-written.
 
@@ -48,7 +48,7 @@ The engineer only ever writes `CompatibilityPolicy`. `StackUpgrade` is created e
 - Go 1.26 (see go.mod). Chosen over TypeScript for K8s-native ecosystem fit, Helm SDK access, single-binary distribution.
 - kubebuilder v4 layout, controller-runtime v0.23, k8s.io v0.35, helm.sh/helm/v3, React + Vite. Planned: go-git, go-github, Anthropic Go SDK.
 - controller-gen v0.21.0 and golangci-lint v2.14.0 run via `go run ...@version` from the Makefile (no tools.go, no GOPATH install). The golangci-lint version is also pinned in `.github/workflows/ci.yml`; keep the two in sync.
-- Knowledge base: YAML under `knowledge/tools/`, compiled into the binary via go:embed (`knowledge/embed.go`, `planner.Load(fs.FS)`). `--knowledge-base-path` optionally replaces it with a directory on disk. Schema v2 (S23; documented at the top of every file): canonical `tool` + `aliases` (the names scanners report), per version `app_version` (the compare key), `chart_version`, `source` (release notes). `Load` parses strictly and validates the whole KB, so the operator refuses to start on an invalid one. Versions compare as full semver with `github.com/Masterminds/semver/v3` (Helm's library); `Matrix.CanonicalName` maps an alias to its tool. S26 rebuilt the data from upstream sources (one entry per minor up to the current release; `min_kubernetes` is upstream's supported or tested floor, never below the chart's `kubeVersion`; `incompatible_with` only with an upstream source, none today; the risk levels are defined in each file's schema comment). The data goes stale with every upstream minor.
+- Knowledge base: YAML under `knowledge/tools/`, compiled into the binary via go:embed (`knowledge/embed.go`, `planner.Load(fs.FS)`). `--knowledge-base-path` optionally replaces it with a directory on disk. Schema v2 (S23; documented at the top of every file): canonical `tool` + `aliases` (the names scanners report), `chart_repository` (S27; plain Helm releases do not record theirs), per version `app_version` (the compare key), `chart_version`, `source` (release notes). `Load` parses strictly and validates the whole KB, so the operator refuses to start on an invalid one. Versions compare as full semver with `github.com/Masterminds/semver/v3` (Helm's library); `Matrix.CanonicalName` maps an alias to its tool. S26 rebuilt the data from upstream sources (one entry per minor up to the current release; `min_kubernetes` is upstream's supported or tested floor, never below the chart's `kubeVersion`; `incompatible_with` only with an upstream source, none today; the risk levels are defined in each file's schema comment). The data goes stale with every upstream minor.
 - Tests: `make verify` runs the unit tests with a fake API server. The controller tests that need a real one (CRD defaults and validation, the status subresource, a full reconcile) are named `TestEnvtest*` and skip unless `KUBEBUILDER_ASSETS` is set; `make envtest` downloads etcd + kube-apiserver 1.35.0 with a pinned setup-envtest into `ENVTEST_BIN_DIR` and runs them, and CI runs it as its own job. On the Windows dev machine `ENVTEST_BIN_DIR` points at the D: cache (set in `env.sh`), and `suite_windows_test.go` stops envtest's processes, which envtest itself cannot there.
 - Install: `make docker-build && make deploy` (kustomize `config/default` → namespace `viltrumite-system`, image `ghcr.io/jeikeibnaa/kube-viltrumite:dev`). The UI binds `127.0.0.1:8082` (`--ui-bind-address`) and is reached with `kubectl -n viltrumite-system port-forward deploy/viltrumite-controller-manager 8082` until auth lands (S37).
 - Workflow with Claude Code: one roadmap session = one fresh Claude Code session = one branch (`session/<N>-<topic>`) = one PR; always name exact files to touch; `make verify` before every commit. Full steps in CLAUDE.md.
@@ -59,7 +59,7 @@ The engineer only ever writes `CompatibilityPolicy`. `StackUpgrade` is created e
 
 ---
 
-## Current state (as of 2026-10-01, after S26)
+## Current state (as of 2026-10-11, after S27)
 
 Done — `go vet` and all unit tests green:
 
@@ -80,6 +80,7 @@ Done — `go vet` and all unit tests green:
 - Session 24: scanners report canonical names and app versions. Flux `HelmRelease` via `helm.toolkit.fluxcd.io/v2` (fallback v2beta2, v2beta1), named by chart, versions/release/namespace from the deployed `status.history` entry, listed cluster-wide and kept when it installs into or lives in a watched namespace; a Flux-managed Helm release is reported once, as `fluxcd`. Helm reports `Chart.Metadata.AppVersion` and chart home/sources (lister injectable for tests). Argo CD: multi-source, `status.sync.revision(s)`, `status.summary.images`, destination namespace. Raw: StatefulSets, repository-suffix `image` rules (KB field renamed from `image_contains`), tag suffix cleaning, detection for all six tools. The controller's `resolveInstalled` maps each find to a KB tool (`Matrix.IdentifyChart`; istio's `base` counts only with Istio's origin via the new `alias_origins`), fills the app version from the source, a known image or the exact KB `chart_version`, and keeps one record per tool (GitOps > Helm > raw). `trackedTools` accept aliases; an unknown or unparsable installed version is reported as such. Checked on kind with raw cert-manager, Helm vault and a Flux v2 external-secrets release. v0.1.0 is tagged at `7362ba4`.
 - Session 25: CompatibilityPolicy reconciler tests (audit #13). Fake client with the status subresource over the real scanners (Flux/Argo CD objects, workloads, an injected Helm lister) and the embedded KB: discovery and focused mode, aliases, duplicates, `untrackableTools`, `unknownInstalled`, every status message, `riskTolerance` (unset = HIGH), autoplan (off, `maxRisk` gate with unset = LOW, `autoApprove`, idempotence), `RequeueAfter`, a deleted policy, a failed raw scan. envtest (kube-apiserver 1.35.0, `make envtest`, CI job) for CRD validation and defaults, the status subresource of both CRDs and a full reconcile. Bugs the tests exposed, fixed: `riskTolerance` had no enum (a typo such as `medium` was read as LOW), `spec.ai` was a value struct (Go clients could not create a policy without it), repeated untrackable names were listed twice. Controller tests: 19 / 45 subtests; kind e2e passes. The reconcile tests expect the current KB's versions: data changes update them.
 - Session 26: knowledge base verified against upstream (audit #12). One entry per minor up to cert-manager 1.21, Argo CD 3.5, Istio 1.31, External Secrets 2.11, Prometheus Operator 0.94 (kube-prometheus-stack 91) and Vault 2.0.4 (vault-helm 0.34.1): 114 entries; a script checked every chart against the chart indexes, and all 84 source URLs return 200. Where upstream says not to install a release the entry is the patch it names (cert-manager 1.14.2, 1.19.1; Argo CD 2.14.1, 3.3.2), so `Resolve("1.14.0")` errors. The old data was largely unsourced: every `incompatible_with` pair was removed. No ingress-nginx entry: it was retired upstream (archived March 2026); its one sourced conflict is in cert-manager 1.18's notes. Istio 1.31 charts moved to `blob.istio.io`; Istio 1.30's charts run `registry.istio.io/release/pilot` (new detection rule, found on kind). Checked on kind v1.32.2: Argo CD raw, cert-manager/external-secrets/Istio through Argo CD Applications, kube-prometheus-stack and Vault through Helm, all six with the right name and version. The S25 reconcile tests follow the new data; `/api/health` reports 0.2.0. Tag v0.2.0 at the S26 merge commit. Known limits carried forward: `LatestSafeVersion` counts only the target entry's risk (S31); whether `min_kubernetes` blocks or warns is S28's call.
+- Session 27: StackUpgrade API (audit #1, #9, #10; S25 finding 9). Each tool records `source`, `namespace`, `releaseName`, `chart` (name, KB `chart_version` for the target, repository: the install's — Argo CD `repoURL`, Flux HelmRepository `url` — else the KB's new `chart_repository`) and `managedBy`. `spec.approved` (default false) replaces `approvalRequired` and the status approval; a CRD rule (`self == oldSelf` once approved) keeps an approved plan unchanged; autoplan's `autoApprove` creates plans approved in one write; the UI's approve endpoint patches the spec. StackUpgrade reconciler: no polling for approval, no `Requeue: true` (`RequeueAfter` 5s after phase changes), Succeeded/RolledBack final (they used to be reset to Pending and could run again), a `StepStarted` status write before each step so a stale cached copy cannot repeat a step, and the executor gets the release, namespace, chart, repository and chart version. Scanners report the managing object, and Flux's HelmRepository url (RBAC `list` on `helmrepositories`). On kind, autoplan wrote correct Flux and Helm plans; approving the vault plan reached Helm and failed with `secrets is forbidden`: the operator cannot write Helm release Secrets or chart resources (S29). Controller tests: 24 / 46 subtests (6 envtest); `make e2e` holds an unapproved plan in Pending.
 
 Numbering note: the old plan's sessions 20–22 (dashboard, Plan upgrade, raw-install guard) are now S34, S35 and S29 in the v1.0 roadmap. Their detailed prompts are kept at the bottom of this file.
 
@@ -93,7 +94,7 @@ History note: an unrelated scratch file (`docs/devlog/test`) and the 97MB `opera
 
 | # | Finding | Fixed in |
 |---|---|---|
-| 1 | `reconcileUpgrading` passes the tool name as both Helm release name and chart ref, with no namespace — real upgrades fail with "release not found" regardless of install method. | S27, S29 |
+| 1 | `reconcileUpgrading` passes the tool name as both Helm release name and chart ref, with no namespace — real upgrades fail with "release not found" regardless of install method. | S27 ✅ (the plan records release, namespace, chart, repository; on kind the upgrade reached the chart), S29 (route by source; Helm write RBAC) |
 | 2 | `helm upgrade` against Flux/Argo-managed releases is reverted by the GitOps controller. | S29 (route/block), S42–44 (PR mode) |
 | 3 | KB mixes app versions (argo-cd, istio, cert-manager) with chart versions (vault, prometheus-stack); the Helm scanner reports chart versions. | S23 ✅ (every entry has `app_version` + `chart_version`), S24 ✅ (scanners report app versions) |
 | 4 | Tool names: Helm scanner uses the chart name (`kube-prometheus-stack` ≠ `prometheus-stack`; istio charts are `base`/`istiod`); Flux scanner uses the HelmRelease object name. | S23 ✅ (`aliases` + `Matrix.CanonicalName`), S24 ✅ (scanners name by chart; the controller identifies each find) |
@@ -101,8 +102,8 @@ History note: an unrelated scratch file (`docs/devlog/test`) and the 97MB `opera
 | 6 | `CompareMinor` collapses patch versions (external-secrets `0.9.0` vs `0.9.5`). | S23 ✅ (`CompareVersions`, full semver) |
 | 7 | `incompatible_with` / `min_kubernetes` parsed but never enforced; no upgrade ordering; no multi-hop paths. | S28, S31–33 |
 | 8 | AIProvider built then discarded (`_ = aiProvider` in `cmd/operator/main.go`); Anthropic/OpenAI adapters return Noop; `spec.ai` ignored; prompts inline in `ollama.go`. | S38–40 |
-| 9 | UI server: no auth, `Access-Control-Allow-Origin: *`, approve endpoint mutates the cluster; approval stored in `status.phase`. | S21 ✅ (loopback bind, CORS removed, CSRF + DNS-rebinding guards), S27 (approval in spec), S37 (auth) |
-| 10 | `reconcileFailed` sets RolledBack without rolling back; `Requeue: true` used in three places. | S27, S29 |
+| 9 | UI server: no auth, `Access-Control-Allow-Origin: *`, approve endpoint mutates the cluster; approval stored in `status.phase`. | S21 ✅ (loopback bind, CORS removed, CSRF + DNS-rebinding guards), S27 ✅ (`spec.approved`, approved plans immutable), S37 (auth) |
+| 10 | `reconcileFailed` sets RolledBack without rolling back; `Requeue: true` used in three places. | S27 ✅ (no `Requeue: true`), S29 (honest Failed/RolledBack) |
 | 11 | Packaging: `config/manager` and `config/default` empty; no Dockerfile, CI or Helm chart; KB read from disk. | S21 ✅ (Dockerfile, kustomize, go:embed), S22 ✅ (CI; image builds and runs in kind), S48 (Helm chart) |
 | 14 | Generated `config/rbac/role.yaml` lacks markers for what the operator really touches: Flux `helmreleases`, Argo `applications`, Helm release `secrets`, `coordination.k8s.io` leases and `events`. Deployed as-is, the scanners get "forbidden". | S21 ✅, S22 ✅ (no "forbidden" in the kind smoke test) |
 | 15 | The Helm SDK secret driver needs cluster-wide `secrets` get/list, so the operator can read every Secret; RBAC cannot filter by the `owner=helm` label. | S45 (e.g. per-`watchNamespaces` Roles) |
@@ -512,8 +513,11 @@ Report CRITICAL and MAJOR findings.
 ### S29 (was Session 22) — Guard raw installs in the execution path
 
 Audit finding #1 changes the premise: "release not found" also happens for Helm-managed tools,
-because the reconciler never passes the real release name or namespace. S27 adds those to the
-StackUpgrade spec first; this guard then becomes one branch of the S29 execution router.
+because the reconciler never passed the real release name or namespace. S27 added them to the
+StackUpgrade spec (`source`, `releaseName`, `namespace`, `chart`, `managedBy`): route on `source`
+instead of probing for a release, so this guard becomes one branch of the S29 execution router.
+S27's kind check also found that a Helm upgrade needs write RBAC on release Secrets and every kind a
+chart renders (`secrets is forbidden`), and that a no-op failure is reported as RolledBack.
 
 ```
 Read CLAUDE.md first.
