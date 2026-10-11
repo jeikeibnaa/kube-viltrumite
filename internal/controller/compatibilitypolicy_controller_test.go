@@ -4,10 +4,12 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/go-logr/zapr"
@@ -339,6 +341,24 @@ func fluxHelmRelease(name, namespace, chartName, chartVersion, appVersion string
 	return hr
 }
 
+// fromHelmRepository makes a HelmRelease's chart come from the Flux
+// HelmRepository flux-system/name.
+func fromHelmRepository(hr *unstructured.Unstructured, name string) *unstructured.Unstructured {
+	_ = unstructured.SetNestedMap(hr.Object, map[string]interface{}{"kind": "HelmRepository", "name": name},
+		"spec", "chart", "spec", "sourceRef")
+	return hr
+}
+
+// fluxHelmRepository is a Flux v1 HelmRepository in flux-system.
+func fluxHelmRepository(name, url string) *unstructured.Unstructured {
+	repo := &unstructured.Unstructured{}
+	repo.SetGroupVersionKind(schema.GroupVersionKind{Group: "source.toolkit.fluxcd.io", Version: "v1", Kind: "HelmRepository"})
+	repo.SetName(name)
+	repo.SetNamespace("flux-system")
+	_ = unstructured.SetNestedField(repo.Object, url, "spec", "url")
+	return repo
+}
+
 // argoApplication is an Argo CD Application in the argocd namespace that
 // deploys a chart at revision into namespace and reports running images.
 func argoApplication(name, namespace, chartName, revision string, images ...string) *unstructured.Unstructured {
@@ -658,9 +678,19 @@ func autoplanCluster() testCluster {
 // autoplanPlans are the StackUpgrades autoplan may create over
 // autoplanCluster, by name.
 var autoplanPlans = map[string]kubeviltrumitev1alpha1.ToolUpgradeSpec{
-	"auto-cert-manager-1.21.0":     {Name: "cert-manager", CurrentVersion: "v1.12.0", TargetVersion: "1.21.0", Risk: ai.RiskMedium},
-	"auto-external-secrets-2.11.0": {Name: "external-secrets", CurrentVersion: "v0.9.5", TargetVersion: "2.11.0", Risk: ai.RiskLow},
-	"auto-istio-1.31.0":            {Name: "istio", CurrentVersion: "1.25.0", TargetVersion: "1.31.0", Risk: ai.RiskHigh},
+	"auto-cert-manager-1.21.0": {
+		Name: "cert-manager", CurrentVersion: "v1.12.0", TargetVersion: "1.21.0", Risk: ai.RiskMedium,
+		Source: "raw", Namespace: "cert-manager",
+	},
+	"auto-external-secrets-2.11.0": {
+		Name: "external-secrets", CurrentVersion: "v0.9.5", TargetVersion: "2.11.0", Risk: ai.RiskLow,
+		Source: "helm", Namespace: "external-secrets", ReleaseName: "external-secrets",
+		Chart: &kubeviltrumitev1alpha1.ChartRef{Name: "external-secrets", Version: "2.11.0", Repository: "https://charts.external-secrets.io"},
+	},
+	"auto-istio-1.31.0": {
+		Name: "istio", CurrentVersion: "1.25.0", TargetVersion: "1.31.0", Risk: ai.RiskHigh,
+		Source: "raw", Namespace: "istio-system",
+	},
 }
 
 // listUpgrades returns the StackUpgrades opts select, sorted by name.
@@ -678,7 +708,8 @@ func listUpgrades(t *testing.T, c client.Client, opts ...client.ListOption) []ku
 
 // TestPolicyReconcile_Autoplan checks the push step: plans are created only
 // when autoplan is enabled, only up to maxRisk (LOW when unset), in the
-// policy's namespace, and already Approved when autoApprove is set.
+// policy's namespace, and with spec.approved when autoApprove is set. The
+// status is the StackUpgrade controller's: autoplan writes none.
 func TestPolicyReconcile_Autoplan(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -706,7 +737,7 @@ func TestPolicyReconcile_Autoplan(t *testing.T) {
 			wantPlans: []string{"auto-cert-manager-1.21.0", "auto-external-secrets-2.11.0", "auto-istio-1.31.0"},
 		},
 		{
-			name:      "autoApprove creates the plan Approved",
+			name:      "autoApprove creates the plan approved",
 			autoplan:  &kubeviltrumitev1alpha1.AutoplanConfig{Enabled: true, MaxRisk: ai.RiskLow, AutoApprove: true},
 			wantPlans: []string{"auto-external-secrets-2.11.0"},
 		},
@@ -719,10 +750,6 @@ func TestPolicyReconcile_Autoplan(t *testing.T) {
 			reconcilePolicy(t, r, policy)
 
 			autoApprove := tc.autoplan != nil && tc.autoplan.AutoApprove
-			wantPhase := kubeviltrumitev1alpha1.UpgradePhase("")
-			if autoApprove {
-				wantPhase = kubeviltrumitev1alpha1.UpgradePhaseApproved
-			}
 			var names []string
 			for _, su := range listUpgrades(t, r.Client) {
 				names = append(names, su.Name)
@@ -733,11 +760,11 @@ func TestPolicyReconcile_Autoplan(t *testing.T) {
 				if !reflect.DeepEqual(su.Spec.Tools, want) {
 					t.Errorf("%s: tools %+v, want %+v", su.Name, su.Spec.Tools, want)
 				}
-				if su.Spec.ApprovalRequired == autoApprove {
-					t.Errorf("%s: approvalRequired %t, want %t", su.Name, su.Spec.ApprovalRequired, !autoApprove)
+				if su.Spec.Approved != autoApprove {
+					t.Errorf("%s: approved %t, want %t", su.Name, su.Spec.Approved, autoApprove)
 				}
-				if su.Status.Phase != wantPhase {
-					t.Errorf("%s: phase %q, want %q", su.Name, su.Status.Phase, wantPhase)
+				if !reflect.DeepEqual(su.Status, kubeviltrumitev1alpha1.StackUpgradeStatus{}) {
+					t.Errorf("%s: status %+v, want none", su.Name, su.Status)
 				}
 			}
 			if !slices.Equal(names, tc.wantPlans) {
@@ -754,9 +781,14 @@ func TestPolicyReconcile_AutoplanIdempotent(t *testing.T) {
 	// A plan an earlier scan created, since carried out.
 	done := &kubeviltrumitev1alpha1.StackUpgrade{
 		ObjectMeta: metav1.ObjectMeta{Name: "auto-external-secrets-2.11.0", Namespace: policyNamespace},
-		Spec: kubeviltrumitev1alpha1.StackUpgradeSpec{Tools: []kubeviltrumitev1alpha1.ToolUpgradeSpec{
-			{Name: "external-secrets", CurrentVersion: "v0.9.0", TargetVersion: "2.11.0", Risk: ai.RiskLow},
-		}},
+		Spec: kubeviltrumitev1alpha1.StackUpgradeSpec{
+			Tools: []kubeviltrumitev1alpha1.ToolUpgradeSpec{{
+				Name: "external-secrets", CurrentVersion: "v0.9.0", TargetVersion: "2.11.0", Risk: ai.RiskLow,
+				Source: "helm", Namespace: "external-secrets", ReleaseName: "external-secrets",
+				Chart: &kubeviltrumitev1alpha1.ChartRef{Name: "external-secrets", Version: "2.11.0", Repository: "https://charts.external-secrets.io"},
+			}},
+			Approved: true,
+		},
 		Status: kubeviltrumitev1alpha1.StackUpgradeStatus{Phase: kubeviltrumitev1alpha1.UpgradePhaseSucceeded},
 	}
 	cluster := autoplanCluster()
@@ -793,6 +825,134 @@ func TestPolicyReconcile_AutoplanIdempotent(t *testing.T) {
 	}
 	if after.ResourceVersion != before.ResourceVersion || after.Status.Phase != kubeviltrumitev1alpha1.UpgradePhaseSucceeded {
 		t.Errorf("existing plan changed: resourceVersion %s -> %s, phase %q", before.ResourceVersion, after.ResourceVersion, after.Status.Phase)
+	}
+}
+
+// TestPolicyReconcile_AutoplanInstallReference checks what a plan records
+// about where its tool is installed, for each source: the release and its
+// namespace, the managing GitOps object, and the chart to install, whose
+// version comes from the knowledge base and whose repository comes from the
+// install when it records one.
+func TestPolicyReconcile_AutoplanInstallReference(t *testing.T) {
+	policy := newPolicy(kubeviltrumitev1alpha1.CompatibilityPolicySpec{
+		WatchNamespaces: watchAll,
+		Autoplan:        &kubeviltrumitev1alpha1.AutoplanConfig{Enabled: true, MaxRisk: ai.RiskHigh},
+	})
+	cluster := testCluster{
+		objects: []client.Object{
+			argoApplication("argo-cd", "argocd", "argo-cd", "5.43.0", "quay.io/argoproj/argocd:v2.8.4"),
+			fromHelmRepository(fluxHelmRelease("external-secrets", "external-secrets", "external-secrets", "0.9.5", "v0.9.5"), "eso-mirror"),
+			fluxHelmRepository("eso-mirror", "https://charts.mirror.example.com/external-secrets"),
+			rawDeployment("cert-manager", "cert-manager", "quay.io/jetstack/cert-manager-controller:v1.12.0"),
+		},
+		helm: map[string][]*release.Release{
+			"monitoring": {helmRelease("kps", "monitoring", "kube-prometheus-stack", "48.0.0", "v0.66.0")},
+		},
+	}
+	r := newPolicyReconciler(t, policy, cluster, interceptor.Funcs{})
+
+	reconcilePolicy(t, r, policy)
+
+	want := map[string]kubeviltrumitev1alpha1.ToolUpgradeSpec{
+		// The Application's repoURL; the release is named after the Application.
+		"auto-argo-cd-3.5.0": {
+			Name: "argo-cd", CurrentVersion: "v2.8.4", TargetVersion: "3.5.0", Risk: ai.RiskMedium,
+			Source: "argocd", Namespace: "argocd", ReleaseName: "argo-cd",
+			Chart:     &kubeviltrumitev1alpha1.ChartRef{Name: "argo-cd", Version: "10.2.3", Repository: "https://charts.example.com"},
+			ManagedBy: &kubeviltrumitev1alpha1.ManagedByRef{Kind: "Application", Namespace: "argocd", Name: "argo-cd"},
+		},
+		// Raw: no release, no chart.
+		"auto-cert-manager-1.21.0": {
+			Name: "cert-manager", CurrentVersion: "v1.12.0", TargetVersion: "1.21.0", Risk: ai.RiskMedium,
+			Source: "raw", Namespace: "cert-manager",
+		},
+		// The HelmRepository's url, not the knowledge base's.
+		"auto-external-secrets-2.11.0": {
+			Name: "external-secrets", CurrentVersion: "v0.9.5", TargetVersion: "2.11.0", Risk: ai.RiskLow,
+			Source: "fluxcd", Namespace: "external-secrets", ReleaseName: "external-secrets-external-secrets",
+			Chart:     &kubeviltrumitev1alpha1.ChartRef{Name: "external-secrets", Version: "2.11.0", Repository: "https://charts.mirror.example.com/external-secrets"},
+			ManagedBy: &kubeviltrumitev1alpha1.ManagedByRef{Kind: "HelmRelease", Namespace: "flux-system", Name: "external-secrets"},
+		},
+		// Plain Helm records no repository: the knowledge base's. The chart
+		// is named unlike the tool, and its version unlike the app's.
+		"auto-prometheus-stack-0.94.0": {
+			Name: "prometheus-stack", CurrentVersion: "v0.66.0", TargetVersion: "0.94.0", Risk: ai.RiskMedium,
+			Source: "helm", Namespace: "monitoring", ReleaseName: "kps",
+			Chart: &kubeviltrumitev1alpha1.ChartRef{
+				Name: "kube-prometheus-stack", Version: "91.0.0", Repository: "https://prometheus-community.github.io/helm-charts",
+			},
+		},
+	}
+	got := map[string]kubeviltrumitev1alpha1.ToolUpgradeSpec{}
+	for _, su := range listUpgrades(t, r.Client) {
+		if len(su.Spec.Tools) != 1 {
+			t.Errorf("%s: %d tools, want 1", su.Name, len(su.Spec.Tools))
+			continue
+		}
+		got[su.Name] = su.Spec.Tools[0]
+	}
+	for name, w := range want {
+		if g, ok := got[name]; !ok {
+			t.Errorf("no plan %s", name)
+		} else if !reflect.DeepEqual(g, w) {
+			t.Errorf("%s:\n got %+v\nwant %+v", name, describeStep(g), describeStep(w))
+		}
+	}
+	if len(got) != len(want) {
+		t.Errorf("%d plans, want %d", len(got), len(want))
+	}
+}
+
+// describeStep prints a plan step with its chart and managing object.
+func describeStep(s kubeviltrumitev1alpha1.ToolUpgradeSpec) string {
+	out := fmt.Sprintf("%+v", s)
+	if s.Chart != nil {
+		out += fmt.Sprintf(" chart=%+v", *s.Chart)
+	}
+	if s.ManagedBy != nil {
+		out += fmt.Sprintf(" managedBy=%+v", *s.ManagedBy)
+	}
+	return out
+}
+
+// TestPolicyReconcile_AutoplanNoChartVersion checks that autoplan skips an
+// upgrade of a Helm-installed tool when the knowledge base has no chart
+// version for the target: the plan could not say which chart to install. The
+// report still offers the upgrade.
+func TestPolicyReconcile_AutoplanNoChartVersion(t *testing.T) {
+	kb := fstest.MapFS{"widget.yaml": {Data: []byte(`tool: widget
+versions:
+  - app_version: "1.0.0"
+    source: "https://example.com/widget/1.0.0"
+    min_kubernetes: "1.28"
+    risk_level: low
+    upgrade_notes: "First release."
+  - app_version: "1.1.0"
+    source: "https://example.com/widget/1.1.0"
+    min_kubernetes: "1.28"
+    risk_level: low
+    upgrade_notes: "Read the release notes."
+`)}}
+	m, err := planner.Load(kb)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	policy := newPolicy(kubeviltrumitev1alpha1.CompatibilityPolicySpec{
+		WatchNamespaces: []string{"widget"},
+		Autoplan:        &kubeviltrumitev1alpha1.AutoplanConfig{Enabled: true},
+	})
+	r := newPolicyReconciler(t, policy, testCluster{helm: map[string][]*release.Release{
+		"widget": {helmRelease("widget", "widget", "widget", "0.1.0", "1.0.0")},
+	}}, interceptor.Funcs{})
+	r.Matrix, r.Detections = m, nil
+
+	_, got := reconcilePolicy(t, r, policy)
+
+	if len(got.Status.Tools) != 1 || got.Status.Tools[0].RecommendedVersion != "1.1.0" {
+		t.Errorf("tools %+v, want widget with 1.1.0 recommended", got.Status.Tools)
+	}
+	if plans := listUpgrades(t, r.Client); len(plans) != 0 {
+		t.Errorf("plans %+v, want none", plans)
 	}
 }
 
@@ -982,7 +1142,8 @@ func TestEnvtestCompatibilityPolicyDefaults(t *testing.T) {
 // subresource, which the reconcilers rely on and the fake client only
 // emulates: an update leaves the status alone, a status update leaves the spec
 // and the generation alone, and a status sent with a create is dropped, which
-// is why autoplan approves a plan with a status update after creating it.
+// is one reason the approval is part of the spec: autoplan creates a plan
+// approved in one write.
 func TestEnvtestStatusSubresource(t *testing.T) {
 	c := envtestClient(t)
 	ctx := context.Background()
@@ -1031,7 +1192,7 @@ func TestEnvtestStatusSubresource(t *testing.T) {
 		plan := &kubeviltrumitev1alpha1.StackUpgrade{
 			ObjectMeta: metav1.ObjectMeta{Name: "plan", Namespace: ns},
 			Spec: kubeviltrumitev1alpha1.StackUpgradeSpec{Tools: []kubeviltrumitev1alpha1.ToolUpgradeSpec{
-				{Name: "cert-manager", CurrentVersion: "v1.12.0", TargetVersion: "1.14.0", Risk: ai.RiskLow},
+				{Name: "cert-manager", CurrentVersion: "v1.12.0", TargetVersion: "1.14.0", Risk: ai.RiskLow, Source: "raw", Namespace: "cert-manager"},
 			}},
 			Status: kubeviltrumitev1alpha1.StackUpgradeStatus{Phase: kubeviltrumitev1alpha1.UpgradePhaseApproved},
 		}
@@ -1061,14 +1222,15 @@ func TestEnvtestStatusSubresource(t *testing.T) {
 }
 
 // TestEnvtestPolicyReconcile runs the reconciler against the real API server.
-// The scan reads a real Deployment and finds the Flux and Argo CD kinds not
-// served, which is no error; the status goes through the real subresource;
-// the plan autoplan creates passes the StackUpgrade schema. A second scan
-// changes nothing.
+// The scan reads a real Deployment and a Helm release from the lister, and
+// finds the Flux and Argo CD kinds not served, which is no error; the status
+// goes through the real subresource; the plans autoplan creates, one with a
+// chart and one without, pass the StackUpgrade schema. A second scan changes
+// nothing.
 func TestEnvtestPolicyReconcile(t *testing.T) {
 	c := envtestClient(t)
 	ns := envtestNamespace(t, c)
-	if err := c.Create(context.Background(), rawDeployment("external-secrets", ns, "ghcr.io/external-secrets/external-secrets:v0.9.5")); err != nil {
+	if err := c.Create(context.Background(), rawDeployment("vault", ns, "hashicorp/vault:1.14.0")); err != nil {
 		t.Fatalf("create Deployment: %v", err)
 	}
 	policy := &kubeviltrumitev1alpha1.CompatibilityPolicy{
@@ -1084,17 +1246,27 @@ func TestEnvtestPolicyReconcile(t *testing.T) {
 	if err := c.Create(context.Background(), policy); err != nil {
 		t.Fatalf("create policy: %v", err)
 	}
-	r := policyReconcilerFor(t, c, nil)
+	r := policyReconcilerFor(t, c, map[string][]*release.Release{
+		ns: {helmRelease("external-secrets", ns, "external-secrets", "0.9.5", "v0.9.5")},
+	})
 
 	wantTools := []kubeviltrumitev1alpha1.TrackedToolStatus{
-		{Name: "external-secrets", Installed: true, InstalledVersion: "v0.9.5", Source: "raw", Namespace: ns,
+		{Name: "external-secrets", Installed: true, InstalledVersion: "v0.9.5", Source: "helm", Namespace: ns,
 			UpgradeAvailable: true, RecommendedVersion: "2.11.0", Risk: ai.RiskLow, Message: "upgrade available"},
-		{Name: "vault", Message: "not currently installed in cluster"},
+		{Name: "vault", Installed: true, InstalledVersion: "1.14.0", Source: "raw", Namespace: ns,
+			UpgradeAvailable: true, RecommendedVersion: "2.0.4", Risk: ai.RiskLow, Message: "upgrade available"},
 	}
-	wantPlan := []kubeviltrumitev1alpha1.ToolUpgradeSpec{
-		{Name: "external-secrets", CurrentVersion: "v0.9.5", TargetVersion: "2.11.0", Risk: ai.RiskLow},
+	wantPlans := map[string]kubeviltrumitev1alpha1.ToolUpgradeSpec{
+		"auto-external-secrets-2.11.0": {
+			Name: "external-secrets", CurrentVersion: "v0.9.5", TargetVersion: "2.11.0", Risk: ai.RiskLow,
+			Source: "helm", Namespace: ns, ReleaseName: "external-secrets",
+			Chart: &kubeviltrumitev1alpha1.ChartRef{Name: "external-secrets", Version: "2.11.0", Repository: "https://charts.external-secrets.io"},
+		},
+		"auto-vault-2.0.4": {
+			Name: "vault", CurrentVersion: "1.14.0", TargetVersion: "2.0.4", Risk: ai.RiskLow, Source: "raw", Namespace: ns,
+		},
 	}
-	var planVersion string
+	planVersions := map[string]string{}
 	for scan := 1; scan <= 2; scan++ {
 		// Errors the scanners log, such as a failed Flux or Argo CD list.
 		core, logged := observer.New(zapcore.ErrorLevel)
@@ -1119,19 +1291,185 @@ func TestEnvtestPolicyReconcile(t *testing.T) {
 		}
 
 		plans := listUpgrades(t, c, client.InNamespace(ns))
-		if len(plans) != 1 || plans[0].Name != "auto-external-secrets-2.11.0" {
-			t.Fatalf("scan %d: plans %+v, want auto-external-secrets-2.11.0 only", scan, plans)
+		if len(plans) != len(wantPlans) {
+			t.Fatalf("scan %d: plans %+v, want %d", scan, plans, len(wantPlans))
 		}
-		plan := plans[0]
-		if !reflect.DeepEqual(plan.Spec.Tools, wantPlan) || plan.Spec.ApprovalRequired ||
-			plan.Status.Phase != kubeviltrumitev1alpha1.UpgradePhaseApproved {
-			t.Errorf("scan %d: plan spec %+v, phase %q; want %+v, no approval required, Approved",
-				scan, plan.Spec, plan.Status.Phase, wantPlan)
+		for _, plan := range plans {
+			want, ok := wantPlans[plan.Name]
+			if !ok {
+				t.Errorf("scan %d: unexpected plan %s", scan, plan.Name)
+				continue
+			}
+			if len(plan.Spec.Tools) != 1 || !reflect.DeepEqual(plan.Spec.Tools[0], want) || !plan.Spec.Approved {
+				t.Errorf("scan %d: %s: spec %+v; want approved with %s", scan, plan.Name, plan.Spec, describeStep(want))
+			}
+			if scan == 1 {
+				planVersions[plan.Name] = plan.ResourceVersion
+			} else if plan.ResourceVersion != planVersions[plan.Name] {
+				t.Errorf("the second scan changed %s: resourceVersion %s -> %s", plan.Name, planVersions[plan.Name], plan.ResourceVersion)
+			}
 		}
-		if scan == 1 {
-			planVersion = plan.ResourceVersion
-		} else if plan.ResourceVersion != planVersion {
-			t.Errorf("the second scan changed the plan: resourceVersion %s -> %s", planVersion, plan.ResourceVersion)
+	}
+}
+
+// TestEnvtestStackUpgradeValidation creates plans from manifests, as kubectl
+// apply sends them, and checks what the CRD schema rejects.
+func TestEnvtestStackUpgradeValidation(t *testing.T) {
+	c := envtestClient(t)
+	ns := envtestNamespace(t, c)
+
+	type obj = map[string]interface{}
+	// tool is a plan step for a Helm release with overrides applied; a nil
+	// value drops the field.
+	tool := func(overrides obj) obj {
+		step := obj{
+			"name": "cert-manager", "currentVersion": "v1.20.4", "targetVersion": "1.21.0", "risk": "MEDIUM",
+			"source": "fluxcd", "namespace": "cert-manager", "releaseName": "cert-manager",
+			"chart":     obj{"name": "cert-manager", "version": "v1.21.0", "repository": "https://charts.jetstack.io"},
+			"managedBy": obj{"kind": "HelmRelease", "namespace": "flux-system", "name": "cert-manager"},
 		}
+		for k, v := range overrides {
+			if v == nil {
+				delete(step, k)
+			} else {
+				step[k] = v
+			}
+		}
+		return step
+	}
+	tests := []struct {
+		name    string
+		spec    interface{} // nil: no spec
+		wantErr string      // part of the rejection; "" means accepted
+	}{
+		{name: "a plan as autoplan writes it", spec: obj{"tools": []interface{}{tool(nil)}, "approved": true}},
+		{
+			name: "raw install: no release, chart or managing object",
+			spec: obj{"tools": []interface{}{tool(obj{"source": "raw", "releaseName": nil, "chart": nil, "managedBy": nil})}},
+		},
+		{name: "no spec", wantErr: "spec: Required value"},
+		{name: "no tools", spec: obj{"tools": []interface{}{}}, wantErr: "spec.tools: Invalid value: 0: spec.tools in body should have at least 1 items"},
+		{name: "source outside the enum", spec: obj{"tools": []interface{}{tool(obj{"source": "kubectl"})}}, wantErr: `spec.tools[0].source: Unsupported value: "kubectl"`},
+		{name: "no source", spec: obj{"tools": []interface{}{tool(obj{"source": nil})}}, wantErr: "spec.tools[0].source: Required value"},
+		{name: "no namespace", spec: obj{"tools": []interface{}{tool(obj{"namespace": nil})}}, wantErr: "spec.tools[0].namespace: Required value"},
+		{name: "risk outside the enum", spec: obj{"tools": []interface{}{tool(obj{"risk": "medium"})}}, wantErr: `spec.tools[0].risk: Unsupported value: "medium"`},
+		{name: "chart without a version", spec: obj{"tools": []interface{}{tool(obj{"chart": obj{"name": "cert-manager"}})}}, wantErr: "spec.tools[0].chart.version: Required value"},
+		{
+			name:    "managing object outside the kinds",
+			spec:    obj{"tools": []interface{}{tool(obj{"managedBy": obj{"kind": "Kustomization", "namespace": "flux-system", "name": "apps"}})}},
+			wantErr: `spec.tools[0].managedBy.kind: Unsupported value: "Kustomization"`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			plan := &unstructured.Unstructured{Object: obj{}}
+			if tc.spec != nil {
+				plan.Object["spec"] = tc.spec
+			}
+			plan.SetGroupVersionKind(kubeviltrumitev1alpha1.GroupVersion.WithKind("StackUpgrade"))
+			plan.SetGenerateName("plan-")
+			plan.SetNamespace(ns)
+
+			err := c.Create(context.Background(), plan)
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Errorf("rejected: %v", err)
+			case tc.wantErr != "" && (!apierrors.IsInvalid(err) || !strings.Contains(err.Error(), tc.wantErr)):
+				t.Errorf("err = %v, want Invalid with %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestEnvtestApprovedPlanImmutable checks the CRD rule that an approved plan
+// cannot change: what runs is what was approved. Before the approval the plan
+// may change; the approval itself is a change; the operator's status writes
+// are not affected.
+func TestEnvtestApprovedPlanImmutable(t *testing.T) {
+	c := envtestClient(t)
+	ctx := context.Background()
+	plan := &kubeviltrumitev1alpha1.StackUpgrade{
+		ObjectMeta: metav1.ObjectMeta{Name: "plan", Namespace: envtestNamespace(t, c)},
+		Spec: kubeviltrumitev1alpha1.StackUpgradeSpec{Tools: []kubeviltrumitev1alpha1.ToolUpgradeSpec{{
+			Name: "vault", CurrentVersion: "1.14.0", TargetVersion: "1.20.4", Risk: ai.RiskLow,
+			Source: "helm", Namespace: "vault", ReleaseName: "vault",
+			Chart: &kubeviltrumitev1alpha1.ChartRef{Name: "vault", Version: "0.31.0", Repository: "https://helm.releases.hashicorp.com"},
+		}}},
+	}
+	if err := c.Create(ctx, plan); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// The Go client omits approved: false; the CRD default stores it, so
+	// kubectl's APPROVED column reads false rather than empty.
+	stored := &unstructured.Unstructured{}
+	stored.SetGroupVersionKind(kubeviltrumitev1alpha1.GroupVersion.WithKind("StackUpgrade"))
+	if err := c.Get(ctx, client.ObjectKeyFromObject(plan), stored); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if approved, found, _ := unstructured.NestedBool(stored.Object, "spec", "approved"); !found || approved {
+		t.Errorf("stored spec.approved = %t (found %t), want the default false", approved, found)
+	}
+
+	steps := []struct {
+		name    string
+		change  func(*kubeviltrumitev1alpha1.StackUpgrade)
+		status  bool   // a status update instead of an update
+		wantErr string // "" means accepted
+	}{
+		{name: "change the target before the approval", change: func(su *kubeviltrumitev1alpha1.StackUpgrade) {
+			su.Spec.Tools[0].TargetVersion, su.Spec.Tools[0].Chart.Version = "2.0.4", "0.34.1"
+		}},
+		{name: "approve", change: func(su *kubeviltrumitev1alpha1.StackUpgrade) { su.Spec.Approved = true }},
+		{name: "approve again", change: func(su *kubeviltrumitev1alpha1.StackUpgrade) { su.Spec.Approved = true }},
+		{
+			name:    "change the target after the approval",
+			change:  func(su *kubeviltrumitev1alpha1.StackUpgrade) { su.Spec.Tools[0].TargetVersion = "1.20.4" },
+			wantErr: "an approved plan cannot change",
+		},
+		{
+			name:    "add a tool after the approval",
+			change:  func(su *kubeviltrumitev1alpha1.StackUpgrade) { su.Spec.Tools = append(su.Spec.Tools, su.Spec.Tools[0]) },
+			wantErr: "an approved plan cannot change",
+		},
+		{
+			name:    "withdraw the approval",
+			change:  func(su *kubeviltrumitev1alpha1.StackUpgrade) { su.Spec.Approved = false },
+			wantErr: "an approved plan cannot change",
+		},
+		{
+			name: "the operator moves the plan on",
+			change: func(su *kubeviltrumitev1alpha1.StackUpgrade) {
+				su.Status.Phase = kubeviltrumitev1alpha1.UpgradePhaseApproved
+			},
+			status: true,
+		},
+	}
+	for _, step := range steps {
+		var su kubeviltrumitev1alpha1.StackUpgrade
+		if err := c.Get(ctx, client.ObjectKeyFromObject(plan), &su); err != nil {
+			t.Fatalf("%s: Get: %v", step.name, err)
+		}
+		step.change(&su)
+		var err error
+		if step.status {
+			err = c.Status().Update(ctx, &su)
+		} else {
+			err = c.Update(ctx, &su)
+		}
+		switch {
+		case step.wantErr == "" && err != nil:
+			t.Errorf("%s: rejected: %v", step.name, err)
+		case step.wantErr != "" && (!apierrors.IsInvalid(err) || !strings.Contains(err.Error(), step.wantErr)):
+			t.Errorf("%s: err = %v, want Invalid with %q", step.name, err, step.wantErr)
+		}
+	}
+
+	var got kubeviltrumitev1alpha1.StackUpgrade
+	if err := c.Get(ctx, client.ObjectKeyFromObject(plan), &got); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !got.Spec.Approved || got.Spec.Tools[0].TargetVersion != "2.0.4" || len(got.Spec.Tools) != 1 ||
+		got.Status.Phase != kubeviltrumitev1alpha1.UpgradePhaseApproved {
+		t.Errorf("plan %+v, phase %q; want approved for 2.0.4 only, Approved", got.Spec, got.Status.Phase)
 	}
 }

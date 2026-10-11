@@ -44,11 +44,11 @@ Two custom resources:
 | Resource | Written by | Purpose |
 |---|---|---|
 | `CompatibilityPolicy` | You | Which tools to track, namespaces to watch, risk tolerance, optional auto-planning. The operator writes a per-tool status report back. |
-| `StackUpgrade` | The operator or the dashboard — never by hand | An executable upgrade plan. Phases: `Pending → Approved → Upgrading → Succeeded / Failed / RolledBack`. |
+| `StackUpgrade` | The operator or the dashboard — never by hand | An executable upgrade plan. Per tool it records where the tool is installed (`source`, `namespace`, `releaseName`, the managing Flux `HelmRelease` or Argo CD `Application`) and the chart to install (name, version, repository). It runs only once `spec.approved` is set, and an approved plan cannot change. Phases: `Pending → Approved → Upgrading → Succeeded / Failed / RolledBack`. |
 
 **Pull mode (default):** the operator scans and reports. You click *Plan upgrade*, then *Approve*.
 **Push mode (opt-in):** `spec.autoplan` creates plans automatically for upgrades at or below a risk
-ceiling; `autoApprove` is intended for non-production clusters only.
+ceiling; `autoApprove` creates them already approved and is intended for non-production clusters only.
 
 ```yaml
 apiVersion: kubeviltrumite.io/v1alpha1

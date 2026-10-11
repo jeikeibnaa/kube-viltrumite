@@ -144,6 +144,8 @@ func (s *Server) handleGetStackUpgrade(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleApproveStackUpgrade sets spec.approved, which lets the operator carry
+// out the plan. Approving an approved plan changes nothing.
 func (s *Server) handleApproveStackUpgrade(w http.ResponseWriter, r *http.Request) {
 	ns := r.PathValue("namespace")
 	name := r.PathValue("name")
@@ -154,11 +156,13 @@ func (s *Server) handleApproveStackUpgrade(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	patch := client.MergeFrom(su.DeepCopy())
-	su.Status.Phase = kubeviltrumitev1alpha1.UpgradePhaseApproved
-	if err := s.client.Status().Patch(r.Context(), su, patch); err != nil {
-		http.Error(w, fmt.Sprintf("patch failed: %v", err), http.StatusInternalServerError)
-		return
+	if !su.Spec.Approved {
+		patch := client.MergeFrom(su.DeepCopy())
+		su.Spec.Approved = true
+		if err := s.client.Patch(r.Context(), su, patch); err != nil {
+			http.Error(w, fmt.Sprintf("patch failed: %v", err), http.StatusInternalServerError)
+			return
+		}
 	}
 
 	writeJSON(w, http.StatusOK, stackUpgradeView{

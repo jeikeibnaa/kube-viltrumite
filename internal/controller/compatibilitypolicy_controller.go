@@ -34,13 +34,14 @@ type CompatibilityPolicyReconciler struct {
 //+kubebuilder:rbac:groups=kubeviltrumite.io,resources=compatibilitypolicies,verbs=get;list;watch
 //+kubebuilder:rbac:groups=kubeviltrumite.io,resources=compatibilitypolicies/status,verbs=update;patch
 //+kubebuilder:rbac:groups=kubeviltrumite.io,resources=stackupgrades,verbs=get;list;create
-//+kubebuilder:rbac:groups=kubeviltrumite.io,resources=stackupgrades/status,verbs=update;patch
 //+kubebuilder:rbac:groups=apps,resources=deployments;statefulsets;daemonsets,verbs=list;watch
 
-// Scanner reads. Flux HelmReleases and Argo CD Applications go through the
-// unstructured client; plain Helm releases are stored as Secrets, which the
-// Helm SDK lists directly (the HelmExecutor reads them too).
+// Scanner reads. Flux HelmReleases and HelmRepositories (for a chart's
+// repository) and Argo CD Applications go through the unstructured client;
+// plain Helm releases are stored as Secrets, which the Helm SDK lists directly
+// (the HelmExecutor reads them too).
 //+kubebuilder:rbac:groups=helm.toolkit.fluxcd.io,resources=helmreleases,verbs=get;list;watch
+//+kubebuilder:rbac:groups=source.toolkit.fluxcd.io,resources=helmrepositories,verbs=list
 //+kubebuilder:rbac:groups=argoproj.io,resources=applications,verbs=get;list;watch
 //+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list
 
@@ -163,35 +164,29 @@ func (r *CompatibilityPolicyReconciler) Reconcile(ctx context.Context, req ctrl.
 				return ctrl.Result{}, err
 			}
 
+			step, err := planStep(r.Matrix, ts, installed[ts.Name])
+			if err != nil {
+				logger.Info("cannot plan the upgrade, skipping it", "tool", ts.Name, "targetVersion", ts.RecommendedVersion, "reason", err.Error())
+				continue
+			}
 			upgrade := &kubeviltrumitev1alpha1.StackUpgrade{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      upgradeName,
 					Namespace: policy.Namespace,
 				},
 				Spec: kubeviltrumitev1alpha1.StackUpgradeSpec{
-					Tools: []kubeviltrumitev1alpha1.ToolUpgradeSpec{
-						{
-							Name:           ts.Name,
-							CurrentVersion: ts.InstalledVersion,
-							TargetVersion:  ts.RecommendedVersion,
-							Risk:           ts.Risk,
-						},
-					},
-					ApprovalRequired: !policy.Spec.Autoplan.AutoApprove,
+					Tools: []kubeviltrumitev1alpha1.ToolUpgradeSpec{step},
+					// The approval is part of the spec, so the plan is created
+					// approved in one write.
+					Approved: policy.Spec.Autoplan.AutoApprove,
 				},
 			}
 
 			if err := r.Client.Create(ctx, upgrade); err != nil {
 				return ctrl.Result{}, fmt.Errorf("create StackUpgrade %s: %w", upgradeName, err)
 			}
-			logger.Info("created StackUpgrade", "name", upgradeName, "tool", ts.Name, "targetVersion", ts.RecommendedVersion)
-
-			if policy.Spec.Autoplan.AutoApprove {
-				upgrade.Status.Phase = kubeviltrumitev1alpha1.UpgradePhaseApproved
-				if err := r.Client.Status().Update(ctx, upgrade); err != nil {
-					logger.Error(err, "failed to set auto-approved status", "name", upgradeName)
-				}
-			}
+			logger.Info("created StackUpgrade", "name", upgradeName, "tool", ts.Name, "targetVersion", ts.RecommendedVersion,
+				"source", step.Source, "approved", upgrade.Spec.Approved)
 		}
 	}
 
@@ -212,6 +207,52 @@ func (r *CompatibilityPolicyReconciler) requeue(policy *kubeviltrumitev1alpha1.C
 		interval = 5 * time.Minute
 	}
 	return ctrl.Result{RequeueAfter: interval}
+}
+
+// planStep returns the plan step that upgrades tool ts to its recommended
+// version, with where the tool is installed taken from t, the record the scan
+// kept for it. A tool installed from a Helm chart also gets the chart: the
+// knowledge base's chart version for the target, and the repository the
+// install records or else the knowledge base's (a plain Helm release records
+// none). It fails when the knowledge base has no chart version for the target.
+func planStep(m *planner.Matrix, ts kubeviltrumitev1alpha1.TrackedToolStatus, t scanner.InstalledTool) (kubeviltrumitev1alpha1.ToolUpgradeSpec, error) {
+	step := kubeviltrumitev1alpha1.ToolUpgradeSpec{
+		Name:           ts.Name,
+		CurrentVersion: ts.InstalledVersion,
+		TargetVersion:  ts.RecommendedVersion,
+		Risk:           ts.Risk,
+		Source:         t.Source,
+		Namespace:      t.Namespace,
+		ReleaseName:    t.ReleaseName,
+	}
+	if t.ManagedBy != nil {
+		step.ManagedBy = &kubeviltrumitev1alpha1.ManagedByRef{
+			Kind:      t.ManagedBy.Kind,
+			Namespace: t.ManagedBy.Namespace,
+			Name:      t.ManagedBy.Name,
+		}
+	}
+	if t.Source == "raw" {
+		return step, nil
+	}
+
+	entry, err := m.Resolve(ts.Name, ts.InstalledVersion, ts.RecommendedVersion)
+	if err != nil {
+		return step, err
+	}
+	if entry.ChartVersion == "" {
+		return step, fmt.Errorf("the knowledge base has no chart version for %s %s", ts.Name, ts.RecommendedVersion)
+	}
+	repository := t.RepoURL
+	if repository == "" {
+		repository, _ = m.ChartRepository(ts.Name)
+	}
+	step.Chart = &kubeviltrumitev1alpha1.ChartRef{
+		Name:       t.ChartName,
+		Version:    entry.ChartVersion,
+		Repository: repository,
+	}
+	return step, nil
 }
 
 // sourceRank orders how a tool is managed. A GitOps controller owns the
