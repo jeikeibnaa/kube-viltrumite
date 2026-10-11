@@ -90,8 +90,12 @@ type ToolCompatibility struct {
 	// as istio's chart "base"), the words one of which the chart's origin
 	// must contain for the alias to count. See IdentifyChart.
 	AliasOrigins map[string][]string `yaml:"alias_origins"`
-	Detection    DetectionSpec       `yaml:"detection"`
-	Versions     []VersionEntry      `yaml:"versions"`
+	// ChartRepository is the Helm chart repository the chart versions are
+	// published in (https:// or oci://). A plain Helm release does not record
+	// where its chart came from, so an upgrade of one pulls the chart from here.
+	ChartRepository string         `yaml:"chart_repository"`
+	Detection       DetectionSpec  `yaml:"detection"`
+	Versions        []VersionEntry `yaml:"versions"`
 }
 
 // CompatibilityEntry is the value returned by Resolve. It combines the target
@@ -162,9 +166,10 @@ func RiskAtOrBelow(risk, ceiling ai.RiskLevel) bool {
 // risk_level or breaking-change type outside its enum, versions that do not
 // parse or are not ascending and unique, a detection rule with neither name
 // nor image or an unknown version_from, alias_origins for a name that is not
-// an alias, a tool name or alias declared twice, and incompatible_with keys
-// that name no known tool or alias. It reports every problem it finds, not
-// just the first.
+// an alias, chart versions without a chart_repository or one that is not an
+// absolute https, http or oci URL, a tool name or alias declared twice, and
+// incompatible_with keys that name no known tool or alias. It reports every
+// problem it finds, not just the first.
 func Load(fsys fs.FS) (*Matrix, error) {
 	entries, err := fs.ReadDir(fsys, ".")
 	if err != nil {
@@ -271,6 +276,13 @@ func validateTool(tc *ToolCompatibility) []error {
 	if len(tc.Versions) == 0 {
 		fail("no versions")
 	}
+	if tc.ChartRepository != "" {
+		if err := validateRepository(tc.ChartRepository); err != nil {
+			fail("chart_repository: %w", err)
+		}
+	} else if slices.ContainsFunc(tc.Versions, func(v VersionEntry) bool { return v.ChartVersion != "" }) {
+		fail("missing chart_repository (the versions have chart versions)")
+	}
 
 	var prevApp, prevChart *semver.Version
 	for i := range tc.Versions {
@@ -343,6 +355,19 @@ func validateSource(raw string) error {
 	}
 	if (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
 		return fmt.Errorf("%q is not an absolute http(s) URL", raw)
+	}
+	return nil
+}
+
+// validateRepository requires an absolute https, http or oci URL, as Helm
+// accepts for a chart repository.
+func validateRepository(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("invalid URL %q: %w", raw, err)
+	}
+	if (u.Scheme != "https" && u.Scheme != "http" && u.Scheme != "oci") || u.Host == "" {
+		return fmt.Errorf("%q is not an absolute https, http or oci URL", raw)
 	}
 	return nil
 }
@@ -450,6 +475,17 @@ func (m *Matrix) AppVersionForChart(tool, chartVersion string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// ChartRepository returns the Helm chart repository the knowledge base
+// records for tool (a name or alias). ok is false when the tool is unknown or
+// has no chart repository.
+func (m *Matrix) ChartRepository(tool string) (string, bool) {
+	tc, ok := m.tool(tool)
+	if !ok || tc.ChartRepository == "" {
+		return "", false
+	}
+	return tc.ChartRepository, true
 }
 
 // ValidVersion reports whether s parses as a version the matrix can compare

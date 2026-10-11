@@ -156,6 +156,21 @@ func TestLoad_Validation(t *testing.T) {
 			wantErr: `chart_version: invalid version "latest"`,
 		},
 		{
+			name:    "chart versions without a chart repository",
+			fsys:    fstest.MapFS{"a.yaml": {Data: doc("a", "chart_repository: \"\"\n", entry(nil))}},
+			wantErr: "missing chart_repository",
+		},
+		{
+			name:    "chart repository not a URL",
+			fsys:    fstest.MapFS{"a.yaml": {Data: doc("a", "chart_repository: jetstack\n", entry(nil))}},
+			wantErr: `chart_repository: "jetstack" is not an absolute https, http or oci URL`,
+		},
+		{
+			name:    "chart repository with another scheme",
+			fsys:    fstest.MapFS{"a.yaml": {Data: doc("a", "chart_repository: git://example.com/charts\n", entry(nil))}},
+			wantErr: `chart_repository: "git://example.com/charts" is not an absolute https, http or oci URL`,
+		},
+		{
 			name:    "missing source",
 			fsys:    fstest.MapFS{"a.yaml": {Data: doc("a", "", entry(map[string]string{"source": ""}))}},
 			wantErr: "source: missing release-notes URL",
@@ -586,6 +601,41 @@ func TestAppVersionForChart(t *testing.T) {
 				t.Errorf("AppVersionForChart(%q, %q) = (%q, %v), want (%q, %v)", tc.tool, tc.chart, got, ok, tc.want, tc.wantOK)
 			}
 		})
+	}
+}
+
+func TestChartRepository(t *testing.T) {
+	m := loadEmbedded(t)
+
+	tests := []struct {
+		tool   string
+		want   string
+		wantOK bool
+	}{
+		{tool: "argo-cd", want: "https://argoproj.github.io/argo-helm", wantOK: true},
+		{tool: "cert-manager", want: "https://charts.jetstack.io", wantOK: true},
+		{tool: "external-secrets", want: "https://charts.external-secrets.io", wantOK: true},
+		{tool: "istiod", want: "https://blob.istio.io/istio-release/charts", wantOK: true},
+		{tool: "kube-prometheus-stack", want: "https://prometheus-community.github.io/helm-charts", wantOK: true},
+		{tool: "vault", want: "https://helm.releases.hashicorp.com", wantOK: true},
+		{tool: "velero"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.tool, func(t *testing.T) {
+			got, ok := m.ChartRepository(tc.tool)
+			if got != tc.want || ok != tc.wantOK {
+				t.Errorf("ChartRepository(%q) = (%q, %v), want (%q, %v)", tc.tool, got, ok, tc.want, tc.wantOK)
+			}
+		})
+	}
+
+	// A tool without chart versions needs no repository.
+	noChart, err := Load(fstest.MapFS{"a.yaml": {Data: doc("a", "chart_repository: \"\"\n", entry(map[string]string{"chart_version": ""}))}})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got, ok := noChart.ChartRepository("a"); got != "" || ok {
+		t.Errorf("ChartRepository(a) = (%q, %v), want no repository", got, ok)
 	}
 }
 
@@ -1125,8 +1175,12 @@ func toolYAML(tool string) []byte {
 }
 
 // doc renders a knowledge-base document for tool. header holds extra
-// top-level YAML (such as "aliases: [x]\n") placed before versions.
+// top-level YAML (such as "aliases: [x]\n") placed before versions. The
+// document has a chart repository unless header sets chart_repository.
 func doc(tool, header string, entries ...string) []byte {
+	if !strings.Contains(header, "chart_repository:") {
+		header = "chart_repository: https://charts.example.com\n" + header
+	}
 	return []byte("tool: " + tool + "\n" + header + "versions:\n" + strings.Join(entries, ""))
 }
 
