@@ -26,6 +26,22 @@ The repo's `CLAUDE.md` overrides anything here. Read it first, every time.
 6. **Keep the diff small.** If it grows past about 400 lines of non-generated code, stop. The
    issue is too big. Propose how to split it instead of finishing it.
 
+## Coding principles
+
+These are adapted from Andrej Karpathy's observations on how LLM coding agents fail, as
+collected in forrestchang/andrej-karpathy-skills.
+
+1. **Think before you code.** Say your assumptions out loud. If the task can be read two
+   ways, name the reading you picked. If you're confused, stop and say so rather than
+   guessing.
+2. **Keep it simple.** Write the least code that meets "Done when". No speculative options,
+   layers or future-proofing. If 200 lines could be 50, rewrite it.
+3. **Make surgical changes.** Touch only what the issue needs. Don't reformat, rename or
+   "improve" neighbouring code; list it as a follow-up instead. Every changed line should
+   trace back to the issue.
+4. **Work toward a check.** Turn the task into a check you can run, such as a failing test or
+   a command with an expected output. Loop until it passes, then stop.
+
 ## Go conventions in both repos
 
 - Wrap errors with context: `fmt.Errorf("planning %s: %w", tool, err)`
