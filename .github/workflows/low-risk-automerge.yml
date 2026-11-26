@@ -1,0 +1,71 @@
+# Merges a PR on its own when every changed path is low-risk (docs, todos, README, Go tests),
+# once all required CI checks pass. Anything else waits for the owner.
+# Policy: https://github.com/jeikeibnaa/hq/blob/main/policy/authority.md
+#
+# pull_request_target runs main's copy of this file, never the PR's, so a PR can't widen
+# its own allowlist. The job never checks out PR code; it only reads the file list through
+# the API. Branch protection on main keeps the merge waiting for green CI.
+name: Low-risk auto-merge
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review, labeled, unlabeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: automerge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  classify:
+    name: Classify and queue
+    # Only the owner's own branches: fork PRs and other authors always wait for review.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.login == github.repository_owner
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR: ${{ github.event.pull_request.number }}
+      REPO: ${{ github.repository }}
+      DRAFT: ${{ github.event.pull_request.draft }}
+      HOLD: ${{ contains(github.event.pull_request.labels.*.name, 'hold') }}
+    steps:
+      - name: Check every changed path
+        id: paths
+        run: |
+          set -euo pipefail
+          # Renames list both names, so moving code into docs/ doesn't pass.
+          gh api "repos/$REPO/pulls/$PR/files" --paginate \
+            --jq '.[] | .filename, (.previous_filename // empty)' > files.txt
+          echo "Changed paths:"; sed 's/^/  /' files.txt
+
+          allowed='^(docs/.+|todos\.md|README\.md|.+_test\.go|(.+/)?testdata/.+)$'
+          if [ ! -s files.txt ]; then
+            echo "No files listed; treating as not low-risk."
+            echo "low_risk=false" >> "$GITHUB_OUTPUT"
+          elif grep -Eq '(^|/)\.\.(/|$)' files.txt; then
+            echo "A path contains '..'; treating as not low-risk."
+            echo "low_risk=false" >> "$GITHUB_OUTPUT"
+          elif grep -Evq "$allowed" files.txt; then
+            echo "Not low-risk because of:"; grep -Ev "$allowed" files.txt | sed 's/^/  /'
+            echo "low_risk=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "low_risk=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Queue auto-merge
+        if: steps.paths.outputs.low_risk == 'true' && env.DRAFT == 'false' && env.HOLD == 'false'
+        run: |
+          gh pr edit "$PR" --repo "$REPO" --add-label low-risk
+          gh pr merge "$PR" --repo "$REPO" --auto --squash
+
+      - name: Cancel auto-merge
+        if: steps.paths.outputs.low_risk != 'true' || env.DRAFT == 'true' || env.HOLD == 'true'
+        run: |
+          gh pr merge "$PR" --repo "$REPO" --disable-auto 2>/dev/null || true
+          gh pr edit "$PR" --repo "$REPO" --remove-label low-risk 2>/dev/null || true
+          echo "Waiting for the owner's review."

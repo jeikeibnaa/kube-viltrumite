@@ -62,6 +62,44 @@ These tools are installed and ready. You MUST use them at the right moments
 | `/todo` | Manage `todos.md` — add, complete, list, remove tasks |
 | `/update-docs` | Write the bilingual (English + Mongolian) session devlog, update the index and README |
 
+### Staff agents (delegate with the Agent tool)
+
+These are synced from [`jeikeibnaa/hq`](https://github.com/jeikeibnaa/hq). Change them there, not here.
+
+| Agent | When to use |
+|---|---|
+| `senior-engineer` | Reconcilers, planner, executor, scanners, API types: anything multi-file |
+| `junior-engineer` | Tests of existing behaviour, devlogs, todo sync, lint fixes, KB freshness checks |
+| `qa-reviewer` | End of session, alongside the `code-reviewer` skill. It also writes the PR's verification text |
+| `security-engineer` | Any change to RBAC markers or `config/rbac/`, `internal/executor/`, `internal/server/`, `internal/ai/`, or `.github/` |
+| `business-analyst` | Scoping a new session into `todos.md` and `docs/HANDOFF.md` |
+| `sre` | Home-PC sessions only: e2e against the real lab cluster |
+
+### Guardrails
+
+`.claude/hooks/guard.sh` runs before every tool call. It blocks pushes and commits to `main`,
+force pushes, `gh pr merge`, tag pushes and releases, repo settings and secrets, and reading
+`.env` or credential files. GitHub branch protection on `main` also requires green CI. If
+something is blocked, don't work around it. Say so, and leave it to the owner.
+
+**Low-risk auto-merge.** A PR whose every changed path is under `docs/`, or is `todos.md`,
+`README.md`, `*_test.go` or under `testdata/`, merges itself by squash once all CI checks pass
+(`.github/workflows/low-risk-automerge.yml`). Anything else waits for the owner. A normal
+session PR mixes code with its devlog, so it waits. Add the `hold` label to stop an
+auto-merge.
+
+### Unattended sessions (night shifts)
+
+A cloud routine runs sessions with nobody there to answer. It follows
+[hq's night-shift playbook](https://github.com/jeikeibnaa/hq/blob/main/playbooks/night-shift.md)
+together with the Session Workflow below, with these differences:
+
+- When a step says "ask the user", take the safer, smaller option, and record the choice in the
+  PR body and the report.
+- If the previous session's PR isn't merged yet, don't branch from it. Take the next session
+  that doesn't depend on it, or address review comments on the open PR.
+- Step 6: no chip. The night-shift report names the next session instead.
+
 ---
 
 ## Session Workflow
