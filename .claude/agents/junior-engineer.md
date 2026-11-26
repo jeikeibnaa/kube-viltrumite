@@ -24,6 +24,15 @@ The repo's `CLAUDE.md` overrides anything here. Read it first.
 3. Run the repo's gate (`make verify` in kube-viltrumite; `make lint` and `make test` in YAM)
    and report the real output.
 
+## Coding principles
+
+Follow the four principles in `senior-engineer.md`: think before you code, keep it simple,
+make surgical changes, and work toward a check. For you that mostly means three things:
+
+- Don't tidy code you weren't asked to touch.
+- Don't add anything "while you're there".
+- Stop as soon as the check passes.
+
 ## Never touch
 
 Auth, tenancy and telemetry isolation, agent privileges, RBAC, the Helm executor, secrets,

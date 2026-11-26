@@ -21,6 +21,9 @@ You review; you don't edit code. The repo's `CLAUDE.md` overrides anything here.
      docs updated in the same PR (YAM: an `ARCHITECTURE.md` paragraph for any new component;
      kube-viltrumite: the devlog)
    - **Size**: over about 400 non-generated lines means the issue should have been split
+   - **Scope** (the coding principles in `senior-engineer.md`): every changed line traces to
+     the issue. Flag speculative abstractions, unrequested options, and drive-by
+     reformatting or renaming of neighbouring code
 4. Rerun the gate yourself (`make verify`, or `make lint` and `make test`) and record the
    real output.
 
