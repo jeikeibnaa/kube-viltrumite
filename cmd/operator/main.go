@@ -8,6 +8,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/discovery"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -114,16 +115,6 @@ func main() {
 
 	helmExecutor := executor.NewHelmExecutor("", "", dryRun)
 
-	if err := (&controller.StackUpgradeReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Matrix:   matrix,
-		Executor: helmExecutor,
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "StackUpgrade")
-		os.Exit(1)
-	}
-
 	detectionMap := matrix.Detections()
 	detections := make([]scanner.ToolDetection, 0, len(detectionMap))
 	for toolName, spec := range detectionMap {
@@ -138,6 +129,29 @@ func main() {
 			})
 		}
 		detections = append(detections, td)
+	}
+
+	discoveryClient, err := discovery.NewDiscoveryClientForConfig(mgr.GetConfig())
+	if err != nil {
+		setupLog.Error(err, "unable to create discovery client")
+		os.Exit(1)
+	}
+
+	if err := (&controller.StackUpgradeReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Matrix:   matrix,
+		Executor: helmExecutor,
+		Cluster: &controller.StackInspector{
+			Discovery:       discoveryClient,
+			Scanner:         &scanner.ClusterScanner{Client: mgr.GetClient()},
+			WorkloadScanner: &scanner.WorkloadScanner{Client: mgr.GetClient()},
+			Matrix:          matrix,
+			Detections:      detections,
+		},
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "StackUpgrade")
+		os.Exit(1)
 	}
 
 	if err := (&controller.CompatibilityPolicyReconciler{
