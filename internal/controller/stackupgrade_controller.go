@@ -29,12 +29,27 @@ type Upgrader interface {
 	Upgrade(ctx context.Context, step planner.UpgradeStep) (*executor.UpgradeResult, error)
 }
 
+// ClusterInspector reports what pre-flight checks a plan against.
+type ClusterInspector interface {
+	// KubernetesVersion is the cluster's version, as the API server reports it.
+	KubernetesVersion(ctx context.Context) (string, error)
+	// InstalledVersions maps each installed knowledge-base tool to its app
+	// version.
+	InstalledVersions(ctx context.Context) (map[string]string, error)
+}
+
+// preflightRetry is how long a plan whose pre-flight is blocked, or could not
+// run, waits before the checks run again: the cluster may have changed.
+const preflightRetry = 5 * time.Minute
+
 // StackUpgradeReconciler reconciles a StackUpgrade object.
 type StackUpgradeReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Matrix   *planner.Matrix
 	Executor Upgrader
+	// Cluster feeds pre-flight. Nil skips the pre-flight checks.
+	Cluster ClusterInspector
 }
 
 //+kubebuilder:rbac:groups=kubeviltrumite.io,resources=stackupgrades,verbs=get;list;watch;create;update;patch;delete
@@ -87,6 +102,10 @@ func (r *StackUpgradeReconciler) reconcilePending(ctx context.Context, upgrade *
 		}
 	}
 
+	if done, result, err := r.preflight(ctx, upgrade); done {
+		return result, err
+	}
+
 	if !upgrade.Spec.Approved {
 		apimeta.SetStatusCondition(&upgrade.Status.Conditions, metav1.Condition{
 			Type:               "Ready",
@@ -113,6 +132,71 @@ func (r *StackUpgradeReconciler) reconcilePending(ctx context.Context, upgrade *
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: stepInterval}, nil
+}
+
+// preflight checks the plan against the knowledge base and the cluster, and
+// records the outcome in the PreflightPassed condition. done is true when the
+// plan must not go on this round: a finding blocks it, or the cluster could
+// not be inspected (the check fails closed). Warnings let it go on.
+func (r *StackUpgradeReconciler) preflight(ctx context.Context, upgrade *kubeviltrumitev1alpha1.StackUpgrade) (done bool, result ctrl.Result, err error) {
+	if r.Cluster == nil || r.Matrix == nil {
+		return false, ctrl.Result{}, nil
+	}
+	logger := log.FromContext(ctx)
+
+	stop := func(reason, message string) (bool, ctrl.Result, error) {
+		apimeta.SetStatusCondition(&upgrade.Status.Conditions, metav1.Condition{
+			Type: "PreflightPassed", Status: metav1.ConditionFalse, Reason: reason, Message: message,
+		})
+		apimeta.SetStatusCondition(&upgrade.Status.Conditions, metav1.Condition{
+			Type: "Ready", Status: metav1.ConditionFalse, Reason: reason, Message: message,
+		})
+		if err := r.Status().Update(ctx, upgrade); err != nil {
+			return true, ctrl.Result{}, err
+		}
+		return true, ctrl.Result{RequeueAfter: preflightRetry}, nil
+	}
+
+	// The version only feeds the min_kubernetes floor, which warns, so an
+	// unreadable version warns too. The installed stack feeds incompatible_with,
+	// which blocks, so that one fails closed.
+	var warns []string
+	version, err := r.Cluster.KubernetesVersion(ctx)
+	if err != nil {
+		logger.Error(err, "pre-flight: cluster version")
+		warns = append(warns, fmt.Sprintf("cannot read the cluster's Kubernetes version, so min_kubernetes was not checked: %v", err))
+		version = ""
+	}
+	installed, err := r.Cluster.InstalledVersions(ctx)
+	if err != nil {
+		logger.Error(err, "pre-flight: installed stack")
+		return stop("PreflightUnavailable", fmt.Sprintf("cannot read the installed stack: %v", err))
+	}
+
+	tools := make([]planner.PlannedTool, 0, len(upgrade.Spec.Tools))
+	for _, t := range upgrade.Spec.Tools {
+		tools = append(tools, planner.PlannedTool{Name: t.Name, TargetVersion: t.TargetVersion})
+	}
+	findings := r.Matrix.Preflight(tools, version, installed)
+
+	var blocks []string
+	for _, f := range findings {
+		if f.Severity == planner.SeverityBlock {
+			blocks = append(blocks, f.Message)
+		} else {
+			warns = append(warns, f.Message)
+		}
+	}
+	if len(blocks) > 0 {
+		return stop("PreflightBlocked", strings.Join(append(blocks, warns...), "; "))
+	}
+
+	cond := metav1.Condition{Type: "PreflightPassed", Status: metav1.ConditionTrue, Reason: "Passed", Message: "no incompatibility found"}
+	if len(warns) > 0 {
+		cond.Reason, cond.Message = "PassedWithWarnings", strings.Join(warns, "; ")
+	}
+	apimeta.SetStatusCondition(&upgrade.Status.Conditions, cond)
+	return false, ctrl.Result{}, nil
 }
 
 func (r *StackUpgradeReconciler) reconcileApproved(ctx context.Context, upgrade *kubeviltrumitev1alpha1.StackUpgrade) (ctrl.Result, error) {
