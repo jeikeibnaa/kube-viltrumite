@@ -1,7 +1,7 @@
 package planner
 
 import (
-	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -98,7 +98,7 @@ func TestPreflight(t *testing.T) {
 			for _, f := range got {
 				kinds = append(kinds, string(f.Severity)+" "+f.Tool)
 			}
-			if !reflect.DeepEqual(kinds, tc.want) && !(len(kinds) == 0 && len(tc.want) == 0) {
+			if !slices.Equal(kinds, tc.want) {
 				t.Fatalf("findings = %v, want %v (%+v)", kinds, tc.want, got)
 			}
 			if tc.contains != "" && !strings.Contains(got[0].Message, tc.contains) {

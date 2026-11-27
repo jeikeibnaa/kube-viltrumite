@@ -157,10 +157,15 @@ func (r *StackUpgradeReconciler) preflight(ctx context.Context, upgrade *kubevil
 		return true, ctrl.Result{RequeueAfter: preflightRetry}, nil
 	}
 
+	// The version only feeds the min_kubernetes floor, which warns, so an
+	// unreadable version warns too. The installed stack feeds incompatible_with,
+	// which blocks, so that one fails closed.
+	var warns []string
 	version, err := r.Cluster.KubernetesVersion(ctx)
 	if err != nil {
 		logger.Error(err, "pre-flight: cluster version")
-		return stop("PreflightUnavailable", fmt.Sprintf("cannot read the cluster's Kubernetes version: %v", err))
+		warns = append(warns, fmt.Sprintf("cannot read the cluster's Kubernetes version, so min_kubernetes was not checked: %v", err))
+		version = ""
 	}
 	installed, err := r.Cluster.InstalledVersions(ctx)
 	if err != nil {
@@ -174,7 +179,7 @@ func (r *StackUpgradeReconciler) preflight(ctx context.Context, upgrade *kubevil
 	}
 	findings := r.Matrix.Preflight(tools, version, installed)
 
-	var blocks, warns []string
+	var blocks []string
 	for _, f := range findings {
 		if f.Severity == planner.SeverityBlock {
 			blocks = append(blocks, f.Message)
